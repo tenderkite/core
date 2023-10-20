@@ -2,27 +2,28 @@ import { Worker, WorkerOptions, SHARE_ENV, parentPort, workerData, MessagePort, 
 import { cpus } from 'os';
 
 /**
- * 
+ * 创建N-1条线程
+ * 请注意，当前作为0号线程
  * @param threads 
  */
-export function useWorkers(onMessage: (index: number | null, message: any) => void, threads = cpus.length, filename: string = process.argv[1], options?: WorkerOptions) {
+export function useWorkers(onMessage: (index: number, message: any) => void, threads = cpus().length, filename = process.argv[1], options?: WorkerOptions) {
 
-    const channels: Array<Array<MessagePort>> = []
+    const channels: Array<Record<number, MessagePort>> = []
 
-    for (let i = 0; i < threads; ++i) {
+    for (let i = 1; i < threads; ++i) {
 
-        let first: Array<MessagePort> = channels[i]
+        let first = channels[i]
 
         if (first == null) {
-            channels[i] = first = []
+            channels[i] = first = {}
         }
 
         for (let j = i + 1; j < threads; j++) {
 
-            let second: Array<MessagePort> = channels[j]
+            let second = channels[j]
 
             if (second == null) {
-                channels[j] = second = []
+                channels[j] = second = {}
             }
 
             const channel = new MessageChannel()
@@ -32,14 +33,20 @@ export function useWorkers(onMessage: (index: number | null, message: any) => vo
         }
     }
 
-    const workers = [] as Array<Worker>
+    const workers = {} as Record<number, Worker>
 
-    for (let i = 0; i < threads; ++i) {
+    for (let i = 1; i < threads; ++i) {
 
-        let index = i
-        let first = channels[i]
+        const index = i
+        const first = channels[i]
 
-        const worker = new Worker(filename, {
+        const array = []
+        for (let name in first) {
+            //@ts-ignore
+            array.push(first[name])
+        }
+
+        const worker = new Worker(filename!, {
             workerData: {
                 threads,
                 index,
@@ -47,48 +54,40 @@ export function useWorkers(onMessage: (index: number | null, message: any) => vo
             },
             env: SHARE_ENV,
             ...options,
-            transferList: first
+            transferList: array
         })
 
-        workers.push(worker)
-
+        workers[i] = worker
         worker.once("online", () => {
             worker.on("message", (value: any) => {
                 onMessage(index, value)
             })
         })
+        worker.on("error", console.error)
     }
 
-    parentPort?.on("message", (message: any) => {
-        onMessage(null, message)
-    })
-
-    return (index: number | null, message: any) => {
-
-        if (index == null) {
-            throw new Error("index can't be bull")
+    //返回发送用的函数
+    return {
+        index: 0,
+        threads,
+        send: (index: number, message: any) => {
+            const worker = workers[index]
+            if (worker) {
+                worker?.postMessage(message)
+            }
+            else if (index == 0) {
+                setImmediate(onMessage, index, message)
+            }
         }
-
-        if (message == null) {  //没有第二个参数，那么index就是message
-            parentPort?.postMessage(index)
-            return
-        }
-
-        if (workerData.index == index) {
-            setImmediate(onMessage, index, message)
-            return
-        }
-
-        const worker = workers[index]
-
-        worker.postMessage(message)
     }
 }
 
-export function useWorker(onMessage: (index: number | null, message: any) => void) {
+export function useWorker(onMessage: (index: number, message: any) => void) {
 
-    const channels = workerData.channels as Array<MessagePort>
+    const channels = workerData.channels as Record<number, MessagePort>
     const threads = workerData.threads as number
+
+    channels[0] = parentPort!
 
     for (let i = 0; i < threads; ++i) {
 
@@ -104,24 +103,19 @@ export function useWorker(onMessage: (index: number | null, message: any) => voi
         })
     }
 
-    return (index: number | null, message: any) => {
+    return {
+        index: workerData.index as number,
+        threads,
+        send: (index: number, message: any) => {
 
-        if (index == null) {
-            throw new Error("index can't be bull")
+            const port = channels[index]
+
+            if (port) {
+                port.postMessage(message)
+            }
+            else if (workerData.index == index) {
+                setImmediate(onMessage, index, message)
+            }
         }
-
-        if (message == null) {  //没有第二个参数，那么index就是message
-            parentPort?.postMessage(index)
-            return
-        }
-
-        if (workerData.index == index) {
-            setImmediate(onMessage, index, message)
-            return
-        }
-
-        const port = channels[index]
-
-        port.postMessage(message)
     }
 }

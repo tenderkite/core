@@ -2,7 +2,7 @@ import { Component } from "./Component";
 import { TypeRouter } from "./Router";
 import { Service } from "./Service";
 
-export type RequestMethod = "get" | "post" | "call" | "notify"
+export type RequestMethod = "get" | "post" | "call" | "notify" | "setup"
 
 export class Request {
     method: RequestMethod = "get"
@@ -18,7 +18,8 @@ export class Request {
 export class Response {
 
     headers: Record<string, string> = {}
-    status: number = 404
+    status: number = 200
+    statusMessage?: string
     body?: any
 
     constructor() {
@@ -27,7 +28,7 @@ export class Response {
 }
 
 export class KiteEvent {
-    to?: TypeRouter;
+    target?: TypeRouter;
     service?: Service;
     component?: Component;
     request: Request = new Request();

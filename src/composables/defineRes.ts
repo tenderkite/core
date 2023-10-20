@@ -1,14 +1,12 @@
-import { EventHandler } from "../types";
+import { KiteEvent } from "../types";
 
-export interface ResDefine {
-    setup: EventHandler;
-}
+export type ResCreator = (event: KiteEvent) => any;
 
-export function defineRes(options: ResDefine | EventHandler): ResDefine {
+export function defineRes(options: ResCreator | any): ResCreator {
     if (typeof options == "function") {
-        return {
-            setup: options
-        }
+        return options
     }
-    return options
+    return () => {
+        return options
+    }
 }

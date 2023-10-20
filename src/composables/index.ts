@@ -1,8 +1,6 @@
 
-export * from "./defineTimer"
+export * from "../types/Timer"
 export * from "./defineKiteConfig"
-export * from "./defineHandler"
-export * from "./defineMeta"
 
 export * from "./defineService"
 export * from "./defineMiddleware"
@@ -16,3 +14,4 @@ export * from "./useService"
 export * from "./useReses"
 export * from "./useRemote"
 export * from "./useMiddleware"
+export * from "./useWorkers"

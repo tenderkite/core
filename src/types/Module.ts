@@ -1,6 +1,6 @@
 import { ComponentDefine, ServiceDefine } from "../composables";
 import { MiddlewareDefine } from "../composables/defineMiddleware";
-import { ResDefine } from "../composables/defineRes";
+import { ResCreator } from "../composables/defineRes";
 import { Kite } from "./Kite";
 import { join, resolve } from "path";
 import { existsSync } from "fs";
@@ -14,7 +14,7 @@ export class Module {
 
     //module的定制：最好配置是从一个大的config来
     modules: Array<Module> = []
-    reses: Record<string, ResDefine> = {};
+    reses: Record<string, ResCreator> = {};
     services: Record<string, ServiceDefine> = {};
     components: Record<string, ComponentDefine> = {};
     middlewares: Record<string, MiddlewareDefine> = {};

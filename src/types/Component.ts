@@ -1,7 +1,9 @@
-import { ComponentProps } from "../composables";
+import { ComponentProps, ComponentDefine } from "../composables";
 import { Service } from "./Service";
 
 export class Component {
+
+    define!: ComponentDefine
     service!: Service
     props: ComponentProps = {};
 

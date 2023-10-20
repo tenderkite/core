@@ -1,24 +1,17 @@
-import { KiteEvent, Middleware } from "../types";
+import { KiteEvent, Middleware, WithThis } from "../types";
 
-export type MiddlewareProps = Record<string, any>;
 export type MiddlewareHandler = (event: KiteEvent, next: () => Promise<void>) => Promise<void> | void;
+export type MiddlewareSetupHandler = (event: KiteEvent) => Promise<MiddlewareHandler> | MiddlewareHandler
 
-export type MiddlewareRuntime<P extends MiddlewareProps> = {
-    props?: P,
-    handler: MiddlewareHandler,
+export type MiddlewareDefine = {
+    setup: MiddlewareSetupHandler;
 }
 
-export type MiddlewareSetupHandler<P extends MiddlewareProps> = (event: KiteEvent) => Promise<MiddlewareRuntime<P>> | MiddlewareRuntime<P>
-
-export type MiddlewareDefine<P extends MiddlewareProps = any> = {
-    setup: MiddlewareSetupHandler<P>;
-}
-
-export function defineMiddleware<P extends MiddlewareProps>(options: MiddlewareDefine<P> | MiddlewareHandler): MiddlewareDefine<P> {
+export function defineMiddleware(options: (MiddlewareDefine & ThisType<Middleware>) | WithThis<Middleware, MiddlewareHandler>): MiddlewareDefine {
     if (typeof options == "function") {
         return {
             setup: () => {
-                return { handler: options }
+                return options
             }
         }
     }
