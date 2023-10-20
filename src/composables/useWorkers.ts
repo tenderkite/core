@@ -6,7 +6,15 @@ import { cpus } from 'os';
  * 请注意，当前作为0号线程
  * @param threads 
  */
-export function useWorkers(onMessage: (index: number, message: any) => void, threads = cpus().length, filename = process.argv[1], options?: WorkerOptions) {
+export function useWorkers(options: {
+    onMessage: (index: number, message: any) => void,
+    onExit: (index: number) => void,
+    threads?: number,
+    filename?: string,
+    workerOptions?: WorkerOptions
+}) {
+
+    const { onMessage, onExit, threads = cpus().length, filename = process.argv[1], workerOptions } = options
 
     const channels: Array<Record<number, MessagePort>> = []
 
@@ -53,7 +61,7 @@ export function useWorkers(onMessage: (index: number, message: any) => void, thr
                 channels: first
             },
             env: SHARE_ENV,
-            ...options,
+            ...workerOptions,
             transferList: array
         })
 
@@ -64,6 +72,9 @@ export function useWorkers(onMessage: (index: number, message: any) => void, thr
             })
         })
         worker.on("error", console.error)
+        worker.once("exit", () => {
+            onExit(index)
+        })
     }
 
     //返回发送用的函数
@@ -82,7 +93,9 @@ export function useWorkers(onMessage: (index: number, message: any) => void, thr
     }
 }
 
-export function useWorker(onMessage: (index: number, message: any) => void) {
+export function useWorker(options: { onMessage: (index: number, message: any) => void }) {
+
+    const { onMessage } = options
 
     const channels = workerData.channels as Record<number, MessagePort>
     const threads = workerData.threads as number

@@ -21,7 +21,7 @@ export type ComponentDefine<P extends ComponentProps = any, M extends ComponentM
     /**
      * 缓存超时时间：单位秒
      */
-    keepalive?: Number;
+    keepalive?: number;
     /**
      * 各种钩子
      */
@@ -33,7 +33,7 @@ export type ComponentDefine<P extends ComponentProps = any, M extends ComponentM
         */
         onStart?: EventHandler;
         /**
-        * 停止：停止的回调。如果设置了 keepAlive ，然后会放入 keepAlive 列表
+        * 停止：停止的回调,如果设置了 keepAlive ，然后会放入 keepAlive 列表,否则直接 destroy
         * 顺序：component.onStop ==> service.onStop
         */
         onStop?: EventHandler;

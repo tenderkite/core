@@ -1,20 +1,22 @@
 import EventEmitter from "node:events";
+import { isMainThread } from "node:worker_threads";
+
 import { ComponentDefine } from "../composables/defineComponent";
 import { ServiceDefine } from "../composables/defineService";
 import { useWorker, useWorkers } from "../composables/useWorkers";
+import { MiddlewareDefine, MiddlewareHandler, composeMiddlewares } from "../composables/defineMiddleware";
 
 import { Service } from "./Service";
 import { Router, TypeRouter } from "./Router";
 import { EventHandler, KiteEvent, Request, Response } from "./Event";
 import { Component } from "./Component";
-import { MiddlewareDefine, MiddlewareHandler, composeMiddlewares } from "../composables/defineMiddleware";
 import { Middleware } from "./Middlware";
 import { CreateInfo, ServiceCreateInfo } from "./CreateInfo";
 import { Module } from "./Module";
+
 import { splitCreate, splitServiceCreate } from "../utils/splitCreate";
 import { getNestedValue } from "../utils/getNestedValue"
 import { toTypeRouter } from "../utils/toTypeRouter";
-import { isMainThread } from "node:worker_threads";
 import { hashRouter } from "../utils/hashRouter";
 
 export type BootDefine = {
@@ -29,7 +31,7 @@ export class Kite extends EventEmitter {
     reses: Record<string, any> = {};
 
     services: Record<string, Record<string | number, Service>> = {};
-    cachingServices: Record<string, Record<string | number, Service>> = {};
+    keepAlives: Record<string, Record<string | number, Service>> = {};
 
     middlewares: Array<MiddlewareHandler> = [];
     composedMiddleware!: MiddlewareHandler
@@ -84,14 +86,21 @@ export class Kite extends EventEmitter {
         }
 
         if (isMainThread) {
-            const { index, send, threads } = useWorkers(this.onWorkerMessage.bind(this), workerCount)
+            const { index, send, threads } = useWorkers({
+                onMessage: this.onWorkerMessage.bind(this),
+                onExit: this.onWorkerExit.bind(this),
+                threads: workerCount!,
+            })
 
             this.sendWorker = send
             this.workerIndex = index
             this.workerCount = threads
         }
         else {
-            const { index, send, threads } = useWorker(this.onWorkerMessage.bind(this))
+            const { index, send, threads } = useWorker({
+                onMessage: this.onWorkerMessage.bind(this),
+            })
+
             this.sendWorker = send
             this.workerIndex = index
             this.workerCount = threads
@@ -156,17 +165,27 @@ export class Kite extends EventEmitter {
         }
 
         for (let index = 0; index < this.workerCount; ++index) {
-            await this.callWorker(index, "onStop")
+            await this.callWorker(index, "realStop")
         }
     }
 
-    private async onStop() {
+    private async realStop() {
+
+        for (const name in this.keepAlives) {
+            const services = this.keepAlives[name]
+            for (const id in services) {
+                const service = services[id]
+                await this.destroyService(service!)
+            }
+        }
+
+        this.keepAlives = {}
+
         for (const name in this.services) {
             const services = this.services[name]
             for (const name in services) {
                 const service = services[name]
-
-                this.unsetup(service!)
+                await this.realStopService(service!.router, true)
             }
         }
     }
@@ -183,22 +202,54 @@ export class Kite extends EventEmitter {
         const hash = hashRouter(tpRouter)
         const index = hash % this.workerCount
 
-        return await this.callWorker(index, "onCreateService", router, options)
+        return await this.callWorker(index, "realCreateService", tpRouter, options)
     }
 
-    private async onCreateService(router: TypeRouter, options: any) {
+    async stopService(router: Router) {
+        const tpRouter = toTypeRouter(router)
+
+        let serviceDefine = this.serviceDefines[tpRouter.type]
+        if (serviceDefine == null) {
+            throw new Error("now such service:" + tpRouter.type)
+        }
+
+        const hash = hashRouter(tpRouter)
+        const index = hash % this.workerCount
+
+        return await this.callWorker(index, "realStopService", tpRouter)
+    }
+
+    private async realCreateService(router: TypeRouter, options: any) {
 
         let serviceDefine = this.serviceDefines[router.type]
         if (serviceDefine == null) {
             throw new Error("now such service:" + router.type)
         }
 
-        const service = new Service()
+        let service
 
-        service.router = router
-        service.define = serviceDefine
+        if (serviceDefine.keepAlive) {
+            const tpService = this.keepAlives[router.type]
+            if (tpService) {
+                service = tpService[router.id]
+                delete tpService[router.id]
+            }
 
-        await this.setup(service, options)
+            if (service?.keepAlive) {
+                clearTimeout(service?.keepAlive)
+            }
+        }
+
+        if (service == null) {
+            service = new Service()
+
+            service.router = router
+            service.define = serviceDefine
+
+            await this.setupService(service, options)
+        }
+
+        await this.onStartService(service)
 
         let tpService = this.services[service.router.type]
         if (tpService == null) {
@@ -208,26 +259,59 @@ export class Kite extends EventEmitter {
         tpService[service.router.id] = service
     }
 
-    async destroyService(router: Router) {
+    private async realStopService(router: TypeRouter, forceDestroy = false) {
 
-        const tpRouter = toTypeRouter(router)
-        let tpService = this.services[tpRouter.type]
+        let tpService = this.services[router.type]
         if (tpService == null) {
             return
         }
 
-        const service = tpService[tpRouter.id]
+        const service = tpService[router.id]
         if (service == null) {
             return
         }
 
-        delete tpService[tpRouter.id]
+        delete tpService[router.id]
 
-        //Todo
+        await this.onStopService(service)
 
+        if (service.define.keepAlive && !forceDestroy) {
+            this.keepAliveService(service);
+        }
+        else {
+            await this.destroyService(service)
+        }
+    }
+    async destroyService(service: Service) {
+
+        if (service.keepAlive) {
+            clearTimeout(service.keepAlive)
+            service.keepAlive = null
+        }
+
+        for (const name in service.components) {
+            const component = service.components[name]
+
+            const event = new KiteEvent()
+
+            event.service = service
+            event.component = component!
+            event.request.path = `services/${service.router.type}/components/${name}/onDestroy`
+
+            await component?.define.hooks?.onDestroy?.call(component, event)
+        }
+
+        {
+            const event = new KiteEvent()
+
+            event.service = service
+            event.request.path = `services/${service.router.type}/onDestroy`
+
+            await service.define.hooks?.onDestroy?.call(service, event)
+        }
     }
 
-    async setup(service: Service, options: any) {
+    async setupService(service: Service, options: any) {
 
         let serviceDefine = service.define
 
@@ -256,7 +340,7 @@ export class Kite extends EventEmitter {
         //create components
         for (const createInfo of runtime.components ?? []) {
             const { name, options } = splitCreate(createInfo)
-            const componentDefine = this.searchComponent(serviceDefine, name)
+            const componentDefine = this.getComponentDefine(serviceDefine, name)
             if (componentDefine == null) {
                 throw new Error(`no such component:` + name)
             }
@@ -280,7 +364,7 @@ export class Kite extends EventEmitter {
         //create middleware
         for (const createInfo of runtime.middlewares ?? []) {
             const { name, options } = splitCreate(createInfo)
-            const middlewareDefine = this.searchMiddleware(serviceDefine, name)
+            const middlewareDefine = this.getMiddlewareDefine(serviceDefine, name)
             if (middlewareDefine == null) {
                 throw new Error(`no such middleware:` + name)
             }
@@ -305,109 +389,82 @@ export class Kite extends EventEmitter {
         }
 
         service.composedMiddleware = composeMiddlewares(service.middlewares)
+    }
 
-        this.attachTimers(service)
+    private keepAliveService(service: Service) {
+        let tpService = this.keepAlives[service.router.type];
+        if (tpService == null) {
+            this.keepAlives[service.router.type] = tpService = {};
+        }
+
+        tpService[service.router.id] = service;
+        service.keepAlive = setTimeout(async () => {
+
+            delete service.keepAlive;
+            delete tpService?.[service.router.id];
+
+            await this.destroyService(service);
+
+        }, service.define.keepAlive! * 1000);
+    }
+
+    async onStartService(service: Service) {
+
+        for (const name in service.components) {
+            const component = service.components[name]
+
+            const event = new KiteEvent()
+
+            event.service = service
+            event.component = component!
+            event.request.path = `services/${service.router.type}/components/${name}/onStart`
+
+            await component?.define.hooks?.onStart?.call(component, event)
+        }
+
+        {
+            const event = new KiteEvent()
+
+            event.service = service
+            event.request.path = `services/${service.router.type}/onStart`
+
+            await service.define.hooks?.onStart?.call(service, event)
+        }
+
         this.attachEvents(service)
+        this.attachTimers(service)
     }
 
-    async unsetup(service: Service) {
+    async onStopService(service: Service) {
 
-        let serviceDefine = service.define
+        for (const name in service.components) {
+            const component = service.components[name]
 
-        // clear component timer
-        let globalEvents = []
-        for (let name in service.components) {
-            const component = service.components[name]!
-            const componentDefine = component.define
+            const event = new KiteEvent()
 
-            for (const name in componentDefine.timers) {
-                const timer = componentDefine.timers[name]!
-                const exists = component.timers[name]
+            event.service = service
+            event.component = component!
+            event.request.path = `services/${service.router.type}/components/${name}/onStop`
 
-                if (!exists) {
-                    continue
-                }
-
-                if (timer.delay) {
-                    //@ts-ignore
-                    clearTimeout(exists)
-                }
-                else {
-                    //@ts-ignore
-                    clearInterval(exists)
-                }
-
-                delete component.timers[name]
-            }
-
-            for (const name in componentDefine.events) {
-
-                let eventName = name
-                if (name.startsWith("~"))    //root event
-                {
-                    eventName = name.substring(1)
-                    globalEvents.push(eventName)
-                }
-
-                const exists = component.events[name]
-
-                component.off(eventName, exists)
-
-                delete component.events[name]
-            }
+            await component?.define.hooks?.onStop?.call(component, event)
         }
 
-        for (let name in serviceDefine.timers) {
+        {
+            const event = new KiteEvent()
 
-            const timer = serviceDefine.timers[name]!
-            const exists = service.timers[name]
+            event.service = service
+            event.request.path = `services/${service.router.type}/onStop`
 
-            if (!exists) {
-                continue
-            }
-
-            delete service.timers[name]
-
-            if (timer.delay) {
-                //@ts-ignore
-                clearTimeout(exists)
-            }
-            else {
-                //@ts-ignore
-                clearInterval(exists)
-            }
+            await service.define.hooks?.onStop?.call(service, event)
         }
 
-        for (const name in service.events) {
-
-            let eventName = name
-            if (name.startsWith("~"))    //root event
-            {
-                eventName = name.substring(1)
-                globalEvents.push(eventName)
-            }
-
-            const exists = service.events[name]
-            // @ts-ignore
-            service.off(eventName, exists)
-
-            delete service.events[name]
-        }
-
-        for (const name of globalEvents) {
-            const sets = this.globalEvents[name]
-            if (sets == null) {
-                continue
-            }
-            sets.delete(service)
-        }
+        this.unattachTimers(service)
+        this.unattachEvents(service)
     }
-
     attachTimers(service: Service) {
 
-        //regist timers
         for (let name in service.components) {
-            const componentDefine = this.searchComponent(service.define, name)!
+            const componentDefine = this.getComponentDefine(service.define, name)!
             const component = service.components[name]!
 
             for (const name in componentDefine.timers) {
@@ -476,12 +533,60 @@ export class Kite extends EventEmitter {
         }
     }
 
+    unattachTimers(service: Service) {
+        for (let name in service.components) {
+            const component = service.components[name]!
+            const componentDefine = component.define
+
+            for (const name in componentDefine.timers) {
+                const timer = componentDefine.timers[name]!
+                const exists = component.timers[name]
+
+                if (!exists) {
+                    continue
+                }
+
+                if (timer.delay) {
+                    //@ts-ignore
+                    clearTimeout(exists)
+                }
+                else {
+                    //@ts-ignore
+                    clearInterval(exists)
+                }
+
+                delete component.timers[name]
+            }
+        }
+
+        for (let name in service.define.timers) {
+
+            const timer = service.define.timers[name]!
+            const exists = service.timers[name]
+
+            if (!exists) {
+                continue
+            }
+
+            delete service.timers[name]
+
+            if (timer.delay) {
+                //@ts-ignore
+                clearTimeout(exists)
+            }
+            else {
+                //@ts-ignore
+                clearInterval(exists)
+            }
+        }
+    }
+
     attachEvents(service: Service) {
         //regist timers
         const globalEvents = []
 
         for (let name in service.components) {
-            const componentDefine = this.searchComponent(service.define, name)!
+            const componentDefine = this.getComponentDefine(service.define, name)!
             const component = service.components[name]!
 
             for (const name in componentDefine.events) {
@@ -542,6 +647,54 @@ export class Kite extends EventEmitter {
         }
     }
 
+    unattachEvents(service: Service) {
+        let globalEvents = []
+        for (let name in service.components) {
+            const component = service.components[name]!
+            const componentDefine = component.define
+
+            for (const name in componentDefine.events) {
+
+                let eventName = name
+                if (name.startsWith("~"))    //root event
+                {
+                    eventName = name.substring(1)
+                    globalEvents.push(eventName)
+                }
+
+                const exists = component.events[name]
+
+                component.off(eventName, exists)
+
+                delete component.events[name]
+            }
+        }
+
+        for (const name in service.events) {
+
+            let eventName = name
+            if (name.startsWith("~"))    //root event
+            {
+                eventName = name.substring(1)
+                globalEvents.push(eventName)
+            }
+
+            const exists = service.events[name]
+            // @ts-ignore
+            service.off(eventName, exists)
+
+            delete service.events[name]
+        }
+
+        for (const name of globalEvents) {
+            const sets = this.globalEvents[name]
+            if (sets == null) {
+                continue
+            }
+            sets.delete(service)
+        }
+    }
+
     getService(router: Router) {
         //@ts-ignore
         const type = router.type || router
@@ -555,7 +708,7 @@ export class Kite extends EventEmitter {
         return tpService[id]
     }
 
-    searchService(name: string) {
+    getServiceDefine(name: string) {
         let serviceDefine = this.serviceDefines[name]
         if (serviceDefine == null) {
             throw new Error("now such service:" + name)
@@ -564,7 +717,7 @@ export class Kite extends EventEmitter {
         return serviceDefine
     }
 
-    searchComponent(serviceDefine: ServiceDefine, name: string) {
+    getComponentDefine(serviceDefine: ServiceDefine, name: string) {
         let exists = serviceDefine.components?.[name]
         if (exists) {
             return exists
@@ -572,7 +725,7 @@ export class Kite extends EventEmitter {
         return this.componentDefines[name]
     }
 
-    searchMiddleware(serviceDefine: ServiceDefine, name: string) {
+    getMiddlewareDefine(serviceDefine: ServiceDefine, name: string) {
         let exists = serviceDefine.middlewares?.[name]
         if (exists) {
             return exists
@@ -613,7 +766,7 @@ export class Kite extends EventEmitter {
 
     }
 
-    async onFetch(router: TypeRouter, request: Partial<Request>) {
+    private async onFetch(router: TypeRouter, request: Partial<Request>) {
         const service = this.getService(router)
         if (service == null) {
             throw new Error("no such service:" + router.type)
@@ -651,7 +804,6 @@ export class Kite extends EventEmitter {
             }
         }
     }
-
 
     /**
      * 调用service自己的middleware
@@ -704,6 +856,10 @@ export class Kite extends EventEmitter {
 
         const { session, name, args } = message
 
+        if (this.debug) {
+            console.log("onWorkerMessage", name)
+        }
+
         try {
             const result = await this[name](...args)
             if (session) {
@@ -715,6 +871,10 @@ export class Kite extends EventEmitter {
                 this.notifyWorker(index, "onError", session, e)
             }
         }
+    }
+
+    private async onWorkerExit(index: number) {
+        console.log("worker exit", index)
     }
 
     private async onResp(id: number, result: any, error: any) {

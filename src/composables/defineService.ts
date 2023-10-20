@@ -29,7 +29,7 @@ export type ServiceDefine<P extends ServiceProps = any, M extends ServiceMethods
     /**
      * 缓存超时时间：单位秒
      */
-    keepAlive?: Number;
+    keepAlive?: number;
 
     /**
      * 各种钩子
