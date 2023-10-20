@@ -1,5 +1,8 @@
 import EventEmitter from "node:events";
-import { ComponentDefine, ServiceDefine, useWorker, useWorkers } from "../composables";
+import { ComponentDefine } from "../composables/defineComponent";
+import { ServiceDefine } from "../composables/defineService";
+import { useWorker, useWorkers } from "../composables/useWorkers";
+
 import { Service } from "./Service";
 import { Router, TypeRouter } from "./Router";
 import { EventHandler, KiteEvent, Request, Response } from "./Event";
@@ -136,13 +139,13 @@ export class Kite extends EventEmitter {
         }
 
         //合并成一个
-        this.middlewares.push(this.requestMiddleware.bind(this))
+        this.middlewares.push(this.serviceMiddlewares.bind(this))
 
         this.composedMiddleware = composeMiddlewares(this.middlewares)
 
         for (const one of serviceCreates) {
             const { router, options } = splitServiceCreate(one)
-            await this.create(router, options)
+            await this.createService(router, options)
         }
     }
 
@@ -168,7 +171,7 @@ export class Kite extends EventEmitter {
         }
     }
 
-    async create(router: Router, options: any) {
+    async createService(router: Router, options: any) {
 
         const tpRouter = toTypeRouter(router)
 
@@ -180,10 +183,10 @@ export class Kite extends EventEmitter {
         const hash = hashRouter(tpRouter)
         const index = hash % this.workerCount
 
-        return await this.callWorker(index, "onCreate", router, options)
+        return await this.callWorker(index, "onCreateService", router, options)
     }
 
-    private async onCreate(router: TypeRouter, options: any) {
+    private async onCreateService(router: TypeRouter, options: any) {
 
         let serviceDefine = this.serviceDefines[router.type]
         if (serviceDefine == null) {
@@ -205,7 +208,7 @@ export class Kite extends EventEmitter {
         tpService[service.router.id] = service
     }
 
-    async destroy(router: Router) {
+    async destroyService(router: Router) {
 
         const tpRouter = toTypeRouter(router)
         let tpService = this.services[tpRouter.type]
@@ -228,25 +231,14 @@ export class Kite extends EventEmitter {
 
         let serviceDefine = service.define
 
-        // const blacks = ["components", "middlewares", "handlers", "setup", "timers"]
-
-        // for (const name in serviceDefine) {
-        //     if (blacks.includes(name)) {
-        //         continue
-        //     }
-
-        //     const val = serviceDefine[name]
-        //     service[name] = val
-        // }
-
         Object.assign(service, serviceDefine.methods)
 
         const event: KiteEvent = new KiteEvent()
 
         event.service = service
 
-        event.request.path = "services/" + service.router.type
-        event.request.method = "setup"
+        event.request.path = `services/${service.router.type}/setup`
+        event.request.method = "call"
         event.request.body = options
 
         let runtime = await serviceDefine.setup?.call(service, event)
@@ -295,14 +287,14 @@ export class Kite extends EventEmitter {
 
             const middleware = new Middleware()
 
-            middleware.name = `${service.router.type}/${name}`
+            middleware.name = `${service.router.type}/middlewares/${name}/setup`
 
             const clone = {
                 ...event,
                 service,
                 request: {
-                    method: "setup",
-                    path: `${service.router.type}/middlewares/${name}`,
+                    method: "call",
+                    path: `${service.router.type}/middlewares/${name}/setup`,
                     body: options
                 }
             } as KiteEvent
@@ -660,49 +652,37 @@ export class Kite extends EventEmitter {
         }
     }
 
-    private async requestMiddleware(event: KiteEvent, next: () => Promise<void>) {
+
+    /**
+     * 调用service自己的middleware
+     * @param event 
+     * @param next 
+     * @returns 
+     */
+    private async serviceMiddlewares(event: KiteEvent, next: () => Promise<void>) {
 
         const { service } = event
-        const { path } = event.request
+        let { path } = event.request
 
         if (service == null) {
             return next()
         }
 
-        //调用service自己的middleware
-        await service!.composedMiddleware(event, async () => {
+        await service.composedMiddleware(event, async () => {
+            /**
+             * 例子： 
+             * serviceType/remotes/test,
+             * serviceType/handlers/test
+             */
+            const index = path.indexOf("/")
+            const realPath = path.substring(index + 1)
+            const handler = getNestedValue(service.define, realPath, undefined, "/")
 
-            let handler: (...args: any[]) => void | undefined
-            let callthis: any = service
-            if (path.startsWith("@")) {     //调用的是component,格式：@{componentName}/test
-
-                const sep = path.indexOf("/")
-                const componentName = path.substring(1, sep)
-                const handlerName = path.substring(sep)
-
-                const component = service!.components[componentName]
-
-                callthis = component
-                handler = component?.[handlerName]
-            }
-            else {      // 例子： remotes/test,handlers/test
-                handler = getNestedValue(service?.define, path, undefined, "/")
-            }
             //check method
             if (!handler) {
-                event.response.status = 404
-                event.response.statusMessage = `no such handler:` + path
-                return
+                return next()
             }
-
-            //@ts-ignore
-            if (handler.__kite)      //kites' event handler
-            {
-                return await (handler as EventHandler).call(callthis, event)
-            }
-            else {
-                event.body = await handler.call(callthis, ...(event.request.body as Array<any> || []))
-            }
+            return await (handler as EventHandler).call(service, event)
         })
     }
 

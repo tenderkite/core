@@ -12,7 +12,7 @@ export class Target {
     constructor() { }
 
     create(options: any) {
-        return this.kite.create(this.remote, { ...options, peer: this.local })
+        return this.kite.createService(this.remote, { ...options, peer: this.local })
     }
 
     /**
@@ -25,13 +25,13 @@ export class Target {
      */
     async call(path: string, ...args: any[]) {
 
-        const response = await this.kite.fetch(this.remote, { path: `handlers/${path}`, body: args, method: "call" })
+        const response = await this.kite.fetch(this.remote, { path: `${this.remote.type}/handlers/${path}`, body: args, method: "call" })
 
         return response.body
     }
 
     /**
-     * 
+     * 原生态调用信息，不做任何处理
      * @param reqInfo 
      * @returns 
      */

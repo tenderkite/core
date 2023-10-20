@@ -1,7 +1,10 @@
 import EventEmitter from "node:events";
-import { MiddlewareHandler, ServiceDefine, ServiceProps, useRemote } from "../composables";
+import { MiddlewareHandler } from "../composables/defineMiddleware"
+import { ServiceDefine } from "../composables/defineService"
 import { Component } from "./Component";
-import { Router, TypeRouter } from "./Router";
+import { TypeRouter } from "./Router";
+
+export type ServiceProps = Record<string, any>;
 
 export class Service extends EventEmitter {
 
@@ -44,7 +47,4 @@ export class Service extends EventEmitter {
         this.reses[name] = val
     }
 
-    remote(router?: Router) {
-        return useRemote(this, router)
-    }
 }

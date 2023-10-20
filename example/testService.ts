@@ -37,15 +37,13 @@ export default defineService({
             // this.echo()
         },
         world2(event) {
-            event.component
         }
     },
     timers: {
         sec: {
             delay: 10,
             setup() {
-                this.remote
-                this.remote()
+
             }
         },
         abc: {
@@ -58,6 +56,7 @@ export default defineService({
 })
 
 defineServiceMethod(function () {
+
     this.components.test
 })
 

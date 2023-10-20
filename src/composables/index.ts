@@ -1,5 +1,4 @@
 
-export * from "../types/Timer"
 export * from "./defineKiteConfig"
 
 export * from "./defineService"

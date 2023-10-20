@@ -1,11 +1,10 @@
-import { KiteEvent, CreateInfo, Service, EventHandlers, WithPropMethods, EventHandler, WithProp, WithThis } from "../types";
+import { KiteEvent, CreateInfo, Service, ServiceProps, EventHandlers, WithPropMethods, EventHandler, WithThis } from "../types";
 import { ComponentDefine } from "./defineComponent";
 import { MiddlewareDefine } from "./defineMiddleware";
 import { TimerDefine } from "../types/Timer";
+import { Middleware } from "../types/Middlware";
 
 type Context = Service
-
-export type ServiceProps = Record<string, any>;
 
 export type ServiceRuntime<P extends ServiceProps> = {
     props?: P
@@ -60,7 +59,7 @@ export type ServiceDefine<P extends ServiceProps = any, M extends ServiceMethods
     /**
      * 提供创建中间件的信息
      */
-    middlewares?: Record<string, MiddlewareDefine>;
+    middlewares?: Record<string, MiddlewareDefine> & ThisType<Middleware>;
     /**
      * 函数集合：这些函数可以直接通过this调用
      */
@@ -132,8 +131,8 @@ export function defineServiceHandlers<T extends ServiceHandlers>(handlers: T & T
     return handlers
 }
 
-export function defineServiceHandler<T extends EventHandler>(method: WithThis<Context, T>) {
-    return method
+export function defineServiceHandler<T extends EventHandler>(handler: WithThis<Context, T>) {
+    return handler
 }
 
 export function defineServiceRemotes<T extends ServiceHandlers>(remotes: T & ThisType<Context>) {
