@@ -11,13 +11,14 @@ import { Router, TypeRouter } from "./Router";
 import { EventHandler, KiteEvent, Request, Response } from "./Event";
 import { Component } from "./Component";
 import { Middleware } from "./Middlware";
-import { CreateInfo, ServiceCreateInfo } from "./CreateInfo";
+import { CreateInfo } from "./CreateInfo";
 import { Module } from "./Module";
 
 import { splitCreate, splitServiceCreate } from "../utils/splitCreate";
 import { getNestedValue } from "../utils/getNestedValue"
 import { toTypeRouter } from "../utils/toTypeRouter";
 import { hashRouter } from "../utils/hashRouter";
+import { buildDependency } from "../utils/buildDependency";
 
 export type BootDefine = {
     services: Array<Router | [Router, any]>;
@@ -107,8 +108,7 @@ export class Kite extends EventEmitter {
         }
 
         const listeners = this.listeners("boot") as Array<BootCallback>
-
-        const serviceCreates: Array<ServiceCreateInfo> = []
+        const serviceCreates: Record<string, Array<[TypeRouter, any]>> = {}
 
         for (const callback of listeners) {
             const boot = callback()
@@ -140,10 +140,20 @@ export class Kite extends EventEmitter {
                 this.middlewares.push(handler.bind(middleware))
             }
 
-            //0号线程派发，这样可以解决那些有前后依赖关系的问题
-            //但是：与此同时也会有串行效率低的问题，不过就交给使用方自己搞定了
+            //排序，为构建依赖做准备
             if (this.workerIndex == 0) {
-                serviceCreates.push(...boot.services)
+
+                for (const createInfo of boot.services) {
+
+                    const { router, options } = splitServiceCreate(createInfo)
+
+                    let exists = serviceCreates[router.type]
+                    if (exists == null) {
+                        exists = serviceCreates[router.type] = []
+                    }
+
+                    exists.push([router, options])
+                }
             }
         }
 
@@ -152,10 +162,41 @@ export class Kite extends EventEmitter {
 
         this.composedMiddleware = composeMiddlewares(this.middlewares)
 
-        for (const one of serviceCreates) {
-            const { router, options } = splitServiceCreate(one)
-            await this.createService(router, options)
+        const dependenciesConfig: Record<string, string[]> = {}
+
+        for (const name in serviceCreates) {
+
+            const define = this.getServiceDefine(name)
+            if (define.depends == null) {
+                dependenciesConfig[name] = []
+            }
+            else if (typeof define.depends == "string") {
+                dependenciesConfig[name] = [define.depends]
+            }
+            else {
+                dependenciesConfig[name] = [...define.depends]
+            }
         }
+
+        const dependencies = buildDependency(dependenciesConfig)
+
+        const promises = []
+
+        //[ [ 'b', 'd', 'a', 'e' ], [ 'f', 'c' ] ]
+        for (const one of dependencies) {   //不同位置元素之间没有关系
+            promises.push(new Promise<void>(async (resolve) => {
+                // 元素数组中，后面的依赖前面的
+                for (const name of one) {
+                    const creates = serviceCreates[name]
+                    for (const create of creates!) {
+                        await this.createService(create[0], create[1])
+                    }
+                }
+                resolve()
+            }))
+        }
+
+        await Promise.all(promises)
     }
 
     async stop() {
@@ -169,7 +210,44 @@ export class Kite extends EventEmitter {
     }
 
     private async manageStop() {
-        for (let index = 1; index < this.workerCount; ++index) {
+
+        //收集已有类型
+        const names = new Set<string>
+
+        for (let index = 0; index < this.workerCount; ++index) {
+            const ones = await this.callWorker(index, "collectNames") as unknown as Array<string>
+            ones.forEach((name) => {
+                names.add(name)
+            })
+        }
+
+        const dependenciesConfig: Record<string, string[]> = {}
+
+        // 建立索引
+        for (const name of names) {
+
+            const define = this.getServiceDefine(name)
+            if (define.depends == null) {
+                dependenciesConfig[name] = []
+            }
+            else if (typeof define.depends == "string") {
+                dependenciesConfig[name] = [define.depends]
+            }
+            else {
+                dependenciesConfig[name] = [...define.depends]
+            }
+        }
+
+        const dependencies = buildDependency(dependenciesConfig)
+
+        for (const one of dependencies) {
+            for (let index = 0; index < this.workerCount; ++index) {
+                await this.callWorker(index, "realStopManyServices", one, true)
+            }
+        }
+
+        //查漏补缺
+        for (let index = 0; index < this.workerCount; ++index) {
             await this.callWorker(index, "realStop")
         }
 
@@ -201,6 +279,14 @@ export class Kite extends EventEmitter {
                 await this.realStopService(service!.router, true)
             }
         }
+    }
+
+    private async collectNames() {
+        const result = []
+        for (const name in this.services) {
+            result.push(name)
+        }
+        return result
     }
 
     async createService(router: Router, options: any) {
@@ -299,6 +385,31 @@ export class Kite extends EventEmitter {
             await this.destroyService(service)
         }
     }
+
+    /**
+     * 按照类型关闭services
+     * 数组中，后面的依赖前面的，所以按照逆序关闭
+     * 
+     * @param names 
+     * @param forceDestroy 
+     * @returns 
+     */
+    private async realStopManyServices(names: Array<string>, forceDestroy = false) {
+
+        for (let i = names.length - 1; i >= 0; i--) {
+            const name = names[i]
+            let tpService = this.services[name!]
+            if (tpService == null) {
+                continue
+            }
+
+            for (let id in tpService) {
+                const service = tpService[id]
+                await this.realStopService(service!.router, forceDestroy)
+            }
+        }
+    }
+
     async destroyService(service: Service) {
 
         if (this.debug) {

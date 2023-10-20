@@ -27,6 +27,12 @@ export type ServiceDefine<P extends ServiceProps = any, M extends ServiceMethods
      */
     setup?: ServiceSetupHandler<P>;
     /**
+     * 依赖的service类型，对于那些被依赖的，启动的时候会优先启动
+     * 退出时，会最晚启动
+     */
+    depends?: string | Array<string>
+
+    /**
      * 缓存超时时间：单位秒
      */
     keepAlive?: number;
