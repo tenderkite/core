@@ -2,7 +2,10 @@ import EventEmitter from "node:events";
 import { MiddlewareHandler } from "../composables/defineMiddleware"
 import { ServiceDefine } from "../composables/defineService"
 import { Component } from "./Component";
-import { TypeRouter } from "./Router";
+import { Router, TypeRouter } from "./Router";
+import { Target } from "./Target";
+import { toTypeRouter } from "../utils/toTypeRouter";
+import { useKite } from "../composables/useKite";
 
 export type ServiceProps = Record<string, any>;
 
@@ -45,6 +48,17 @@ export class Service extends EventEmitter {
 
     set(name: string, val: any) {
         this.reses[name] = val
+    }
+
+    target(router?: Router) {
+
+        const target = new Target()
+
+        target.local = this.router
+        target.remote = toTypeRouter(router ?? this.router)
+        target.kite = useKite()
+
+        return target
     }
 
 }
