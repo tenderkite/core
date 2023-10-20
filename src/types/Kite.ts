@@ -161,15 +161,28 @@ export class Kite extends EventEmitter {
     async stop() {
 
         if (this.workerIndex != 0) {
+            this.notifyWorker(0, "manageStop")
             return
         }
 
-        for (let index = 0; index < this.workerCount; ++index) {
+        await this.manageStop()
+    }
+
+    private async manageStop() {
+        for (let index = 1; index < this.workerCount; ++index) {
             await this.callWorker(index, "realStop")
         }
+
+        await this.realStop()
+
+        setTimeout(process.exit, 1000, 0)
     }
 
     private async realStop() {
+
+        if (this.debug) {
+            console.log(this.workerIndex, "realStop")
+        }
 
         for (const name in this.keepAlives) {
             const services = this.keepAlives[name]
@@ -257,6 +270,10 @@ export class Kite extends EventEmitter {
         }
 
         tpService[service.router.id] = service
+
+        if (this.debug) {
+            console.log(this.workerIndex, "create service", service.router.type, service.router.id)
+        }
     }
 
     private async realStopService(router: TypeRouter, forceDestroy = false) {
@@ -284,6 +301,10 @@ export class Kite extends EventEmitter {
     }
     async destroyService(service: Service) {
 
+        if (this.debug) {
+            console.log(this.workerIndex, "start destroy service", service.router.type, service.router.id)
+        }
+
         if (service.keepAlive) {
             clearTimeout(service.keepAlive)
             service.keepAlive = null
@@ -308,6 +329,10 @@ export class Kite extends EventEmitter {
             event.request.path = `services/${service.router.type}/onDestroy`
 
             await service.define.hooks?.onDestroy?.call(service, event)
+        }
+
+        if (this.debug) {
+            console.log(this.workerIndex, "destroy service done", service.router.type, service.router.id)
         }
     }
 
@@ -741,8 +766,8 @@ export class Kite extends EventEmitter {
      */
     async fetch(router: TypeRouter, request: Partial<Request>): Promise<Response> {
 
-        const service = this.getService(router)
-        if (service == null) {
+        const define = this.getServiceDefine(router.type)
+        if (define == null) {
             throw new Error("no such service:" + router.type)
         }
 
@@ -857,7 +882,7 @@ export class Kite extends EventEmitter {
         const { session, name, args } = message
 
         if (this.debug) {
-            console.log("onWorkerMessage", name)
+            console.log(this.workerIndex, "onWorkerMessage from", index, name)
         }
 
         try {
