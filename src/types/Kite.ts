@@ -60,10 +60,10 @@ export class Kite extends EventEmitter {
     constructor() { super() }
 
     /**
-     * 
+     * 注册模块
      * @param name 
      */
-    async register(name: string) {
+    async regist(name: string) {
 
         const module = new Module(this)
         await module.load(name)
@@ -171,8 +171,8 @@ export class Kite extends EventEmitter {
 
                 const event = new KiteEvent()
 
-                event.request.path = `middlewares/${name}`
-                event.request.method = "setup"
+                event.request.path = `setup`
+                event.request.method = "fetch"
                 event.request.body = options
                 event.middleware = middleware
 
@@ -232,7 +232,10 @@ export class Kite extends EventEmitter {
                 for (const name of one) {
                     const creates = serviceCreates[name]
                     for (const create of creates!) {
-                        await this.createService(create[0], create[1])
+                        const req = new Request()
+                        req.target = create[0]
+                        req.body = create[1]
+                        await this.createService(req)
                     }
                 }
                 resolve()
@@ -283,11 +286,11 @@ export class Kite extends EventEmitter {
         const dependencies = buildDependency(dependenciesConfig)
 
         for (const one of dependencies) {
-            await this.broadWorkers("realStopManyServices", one, true)
+            await this.callWorkers("realStopManyServices", one, true)
         }
 
         //查漏补缺
-        await this.broadWorkers("realStopAll")
+        await this.callWorkers("realStopAll")
 
         setTimeout(process.exit, 1000, 0)
     }
@@ -333,23 +336,16 @@ export class Kite extends EventEmitter {
 
     /**
      * 创建 service
-     * @param router 
+     * @param req 
      * @param options 
      * @returns 
      */
-    async createService(router: Router, options: any) {
+    async createService(req: Request) {
 
-        const tpRouter = toTypeRouter(router)
-
-        let serviceDefine = this.serviceDefines[tpRouter.type]
-        if (serviceDefine == null) {
-            throw new Error("now such service:" + tpRouter.type)
-        }
-
-        const hash = hashRouter(tpRouter)
+        const hash = hashRouter(req.target)
         const index = hash % this.workerCount
 
-        return await this.callWorker(index, "realCreateService", tpRouter, options)
+        return await this.callWorker(index, "realCreateService", req)
     }
 
     /**
@@ -378,20 +374,20 @@ export class Kite extends EventEmitter {
      * @param router 
      * @param options 
      */
-    private async realCreateService(router: TypeRouter, options: any) {
+    private async realCreateService(req: Request) {
 
-        let serviceDefine = this.serviceDefines[router.type]
+        let serviceDefine = this.serviceDefines[req.target.type]
         if (serviceDefine == null) {
-            throw new Error("now such service:" + router.type)
+            throw new Error("now such service:" + req.target.type)
         }
 
         let service
 
         if (serviceDefine.keepAlive) {
-            const tpService = this.keepAlives[router.type]
+            const tpService = this.keepAlives[req.target.type]
             if (tpService) {
-                service = tpService[router.id]
-                delete tpService[router.id]
+                service = tpService[req.target.id]
+                delete tpService[req.target.id]
             }
 
             if (service?.keepAlive) {
@@ -400,12 +396,12 @@ export class Kite extends EventEmitter {
         }
 
         if (service == null) {
-            service = new Service()
+            service = new Service(this)
 
-            service.router = router
+            service.router = req.target
             service.define = serviceDefine
 
-            await this.setupService(service, options)
+            await this.setupService(service, req)
         }
 
         await this.onStartService(service)
@@ -418,7 +414,7 @@ export class Kite extends EventEmitter {
         tpService[service.router.id] = service
 
         if (this.debug) {
-            console.log(this.workerIndex, "create service", service.router.type, service.router.id)
+            console.log(this.workerIndex, "create service done", service.router.type, service.router.id)
         }
     }
 
@@ -493,7 +489,8 @@ export class Kite extends EventEmitter {
 
             event.service = service
             event.component = component!
-            event.request.path = `services/${service.router.type}/components/${name}/onDestroy`
+            event.request.path = `hooks/onDestroy`
+            event.request.method = "fetch"
 
             await component?.define.hooks?.onDestroy?.call(component, event)
         }
@@ -502,7 +499,8 @@ export class Kite extends EventEmitter {
             const event = new KiteEvent()
 
             event.service = service
-            event.request.path = `services/${service.router.type}/onDestroy`
+            event.request.path = `hooks/onDestroy`
+            event.request.method = "fetch"
 
             await service.define.hooks?.onDestroy?.call(service, event)
         }
@@ -512,19 +510,18 @@ export class Kite extends EventEmitter {
         }
     }
 
-    async setupService(service: Service, options: any) {
+    async setupService(service: Service, req: Request) {
 
         let serviceDefine = service.define
 
         Object.assign(service, serviceDefine.methods)
 
-        const event: KiteEvent = new KiteEvent()
+        const event: KiteEvent = new KiteEvent(req)
 
         event.service = service
 
-        event.request.path = `services/${service.router.type}/setup`
-        event.request.method = "call"
-        event.request.body = options
+        event.request.path = `setup`
+        event.request.method = "fetch"
 
         let runtime = await serviceDefine.setup?.call(service, event)
 
@@ -552,7 +549,13 @@ export class Kite extends EventEmitter {
 
             Object.assign(component, componentDefine.methods)
 
-            const clone = { ...event, request: { body: options }, component } as KiteEvent
+            const clone = new KiteEvent()
+
+            clone.component = component
+
+            clone.request.path = "setup"
+            clone.request.method = "fetch"
+            clone.request.body = options
 
             const runtime = await componentDefine.setup?.call(component, clone)
             if (runtime) {
@@ -574,15 +577,13 @@ export class Kite extends EventEmitter {
 
             middleware.name = `${service.router.type}/middlewares/${name}/setup`
 
-            const clone = {
-                ...event,
-                service,
-                request: {
-                    method: "call",
-                    path: `${service.router.type}/middlewares/${name}/setup`,
-                    body: options
-                }
-            } as KiteEvent
+            const clone = new KiteEvent()
+
+            clone.service = service
+
+            clone.request.path = "setup"
+            clone.request.method = "fetch"
+            clone.request.body = options
 
             const handler = await middlewareDefine.setup.call(middleware, clone)
 
@@ -618,7 +619,8 @@ export class Kite extends EventEmitter {
 
             event.service = service
             event.component = component!
-            event.request.path = `services/${service.router.type}/components/${name}/onStart`
+            event.request.path = `hooks/onStart`
+            event.request.method = "fetch"
 
             await component?.define.hooks?.onStart?.call(component, event)
         }
@@ -627,7 +629,8 @@ export class Kite extends EventEmitter {
             const event = new KiteEvent()
 
             event.service = service
-            event.request.path = `services/${service.router.type}/onStart`
+            event.request.path = `hooks/onStart`
+            event.request.method = "fetch"
 
             await service.define.hooks?.onStart?.call(service, event)
         }
@@ -645,7 +648,8 @@ export class Kite extends EventEmitter {
 
             event.service = service
             event.component = component!
-            event.request.path = `services/${service.router.type}/components/${name}/onStop`
+            event.request.path = `hooks/onStop`
+            event.request.method = "fetch"
 
             await component?.define.hooks?.onStop?.call(component, event)
         }
@@ -654,7 +658,8 @@ export class Kite extends EventEmitter {
             const event = new KiteEvent()
 
             event.service = service
-            event.request.path = `services/${service.router.type}/onStop`
+            event.request.path = `hooks/onStop`
+            event.request.method = "fetch"
 
             await service.define.hooks?.onStop?.call(service, event)
         }
@@ -683,20 +688,33 @@ export class Kite extends EventEmitter {
 
                 timerEvent.service = service
                 timerEvent.component = component
-                timerEvent.request.path = `services/${service.router.type}/components/${name}/timers/${name}`
+                timerEvent.request.path = `timers/${name}`
                 timerEvent.request.method = "notify"
 
                 if (delay) {
                     component.timers[name] = setTimeout(async () => {
                         const handler = componentDefine.timers?.[name]
                         component.timers[name] = false
-                        await handler?.setup.call(component, timerEvent)
+
+                        try {
+                            await handler?.setup.call(component, timerEvent)
+                        }
+                        catch (e) {
+                            this.emit("error", e)
+                        }
+
                     }, delay)
                 }
                 else if (interval) {
                     component.timers[name] = setInterval(async () => {
                         const handler = componentDefine.timers?.[name]
-                        await handler?.setup.call(component, timerEvent)
+
+                        try {
+                            await handler?.setup.call(component, timerEvent)
+                        }
+                        catch (e) {
+                            this.emit("error", e)
+                        }
                     })
                 }
             }
@@ -715,20 +733,30 @@ export class Kite extends EventEmitter {
             const timerEvent = new KiteEvent()
 
             timerEvent.service = service
-            timerEvent.request.path = `services/${service.router.type}/timers/${name}`
+            timerEvent.request.path = `timers/${name}`
             timerEvent.request.method = "notify"
 
             if (delay) {
                 service.timers[name] = setTimeout(async () => {
                     const handler = service.define.timers?.[name]
                     service.timers[name] = false
-                    await handler?.setup.call(service, timerEvent)
+                    try {
+                        await handler?.setup.call(service, timerEvent)
+                    }
+                    catch (e) {
+                        this.emit("error", e)
+                    }
                 }, delay)
             }
             else if (interval) {
                 service.timers[name] = setInterval(async () => {
                     const handler = service.define.timers?.[name]
-                    await handler?.setup.call(service, timerEvent)
+                    try {
+                        await handler?.setup.call(service, timerEvent)
+                    }
+                    catch (e) {
+                        this.emit("error", e)
+                    }
                 }, interval)
             }
         }
@@ -935,24 +963,20 @@ export class Kite extends EventEmitter {
     }
 
     /**
-     * 发送请求
+     * 异步发送请求，等待返回
      * @param router 
      * @param request 
      * @returns 
      */
-    async fetch(router: TypeRouter, request: Partial<Request>): Promise<Response> {
+    async fetch(request: Request): Promise<Response> {
 
-        const define = this.getServiceDefine(router.type)
-        if (define == null) {
-            throw new Error("no such service:" + router.type)
-        }
-
-        const hash = hashRouter(router)
+        const hash = hashRouter(request.target)
         const index = hash % this.workerCount
 
         try {
+            request.method = "fetch"
 
-            const response = await this.callWorker(index, "onFetch", router, request)
+            const response = await this.callWorker(index, "realFetch", request)
 
             return response as Response
         }
@@ -964,45 +988,99 @@ export class Kite extends EventEmitter {
 
             return response
         }
-
     }
 
-    private async onFetch(router: TypeRouter, request: Partial<Request>) {
-        const service = this.getService(router)
+    /**
+     * 通知请求
+     * @param request 
+     */
+    async notify(request: Request) {
+
+        const hash = hashRouter(request.target)
+        const index = hash % this.workerCount
+
+        request.method = "notify"
+
+        this.notifyWorker(index, "realFetch", request)
+    }
+
+    private async realFetch(request: Request) {
+
+        const service = this.getService(request.target)
+
+        const event = new KiteEvent(request)
+
         if (service == null) {
-            throw new Error("no such service:" + router.type)
+            event.response.status = 404
+            event.response.statusMessage = "no such handler:" + event.request.path
+            return event.response
         }
 
-        const event = new KiteEvent()
-
-        event.target = router
         event.service = service
 
-        Object.assign(event.request, request)
-
-        async function throwNoHandler() {
-
-            event.response.status = 404
-            event.response.statusMessage = "no such handler:" + request.path
-        }
-
-        await this.composedMiddleware(event, throwNoHandler)
+        await this.handleEvent(event)
 
         return event.response
     }
 
+    private async handleEvent(event: KiteEvent) {
+
+        async function throwNoHandler() {
+            event.response.status = 404
+            event.response.statusMessage = "no such handler:" + event.request.path
+        }
+
+        await this.composedMiddleware(event, throwNoHandler)
+    }
+
     /**
-     * emit all
+     * 全局广播事件
      * @param name 
      * @param option 
      */
-    globalEmit(eventName: string, ...args: any[]) {
+    broadEvent(source: TypeRouter, eventName: string, ...args: any[]) {
+        this.notifyWorkers("realBroadEvent", source, eventName, ...args)
+    }
 
+    private realBroadEvent(_: TypeRouter, eventName: string, ...args: any[]) {
         for (const name in this.globalEvents) {
             const sets = this.globalEvents[name]
             for (const service of sets!) {
                 service.emit(eventName, ...args)
             }
+        }
+    }
+
+    /**
+     * 
+     * @param source 发送的来源
+     * @param serviceName service 的名称
+     * @param path 路径，例子： handlers/test;remotes/test
+     * @param args 
+     */
+    notifyAll(source: TypeRouter, serviceName: string, path: string, ...args: any[]) {
+        this.notifyWorkers("realNotifyAll", source, serviceName, path, ...args)
+    }
+
+    private realNotifyAll(source: TypeRouter, serviceName: string, path: string, ...args: any[]) {
+        const typeServices = this.services[serviceName]
+        for (const id in typeServices) {
+
+            const service = typeServices[id]
+            if (service == null) {
+                continue
+            }
+
+            const event = new KiteEvent()
+
+            event.service = service!
+            event.request.path = path
+            event.request.method = "notify"
+            event.request.body = args
+            event.request.source = source
+            event.request.target = service?.router
+
+            this.handleEvent(event)
         }
     }
 
@@ -1015,7 +1093,7 @@ export class Kite extends EventEmitter {
     private async serviceMiddlewares(event: KiteEvent, next: () => Promise<void>) {
 
         const { service } = event
-        let { path } = event.request
+        const { path } = event.request
 
         if (service == null) {
             return next()
@@ -1024,12 +1102,10 @@ export class Kite extends EventEmitter {
         await service.composedMiddleware(event, async () => {
             /**
              * 例子： 
-             * serviceType/remotes/test,
-             * serviceType/handlers/test
+             * remotes/test,
+             * handlers/test
              */
-            const index = path.indexOf("/")
-            const realPath = path.substring(index + 1)
-            const handler = getNestedValue(service.define, realPath, undefined, "/")
+            const handler = getNestedValue(service.define, path, undefined, "/")
 
             //check method
             if (!handler) {
@@ -1053,12 +1129,18 @@ export class Kite extends EventEmitter {
         })
     }
 
-    private async broadWorkers(name: string, ...args: any[]) {
+    private async callWorkers(name: string, ...args: any[]) {
         const promises = []
         for (let i = 0; i < this.workerCount; ++i) {
             promises.push(this.callWorker(i, name, ...args))
         }
-        await Promise.all(promises)
+        return await Promise.all(promises)
+    }
+
+    private async notifyWorkers(name: string, ...args: any[]) {
+        for (let i = 0; i < this.workerCount; ++i) {
+            this.notifyWorker(i, name, ...args)
+        }
     }
 
     private async onWorkerMessage(index: number, message: { name: string, args: any[], session?: number }) {

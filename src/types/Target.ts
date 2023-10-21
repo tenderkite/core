@@ -6,40 +6,92 @@ export class Target {
 
     kite!: Kite;
 
-    local!: TypeRouter;
-    remote!: TypeRouter
+    source!: TypeRouter;
+    target!: TypeRouter
 
     constructor() { }
 
+    /**
+     * 创建 service
+     * @param options 
+     * @returns 
+     */
     create(options: any) {
-        return this.kite.createService(this.remote, { ...options, peer: this.local })
+
+        const req = new Request()
+
+        req.source = this.source
+        req.target = this.target
+
+        req.body = options
+
+        return this.kite.createService(req)
     }
 
     stop(forceDestroy = false) {
-        return this.kite.stopService(this.remote, forceDestroy)
+        return this.kite.stopService(this.target!, forceDestroy)
     }
 
     /**
-     * 调用 service 下的handlers函数
-     * 传入 test，会自动转化成 handlers/test
-     * 
-     * @param path: a/b/c
-     * @param args 函数的参数
+     * 请求远端对象
+     * @param path 路径，例子： handlers/test;remotes/test
      * @returns 
      */
-    async call(path: string, ...args: any[]) {
+    async fetch(path: string, options?: Partial<Request>) {
 
-        const response = await this.kite.fetch(this.remote, { path: `${this.remote.type}/handlers/${path}`, body: args, method: "call" })
+        const request = new Request()
 
+        request.path = path
+        request.source = this.source
+        request.target = this.target
+        request.method = "fetch"
+
+        Object.assign(request, options)
+
+        const response = await this.kite.fetch(request)
+
+        return response
+    }
+
+    /**
+     * 请求远端对象
+     * @param path 路径，例子： handlers/test;remotes/test
+     * @returns 
+     */
+    async notify(path: string, options?: Partial<Request>) {
+
+        const request = new Request()
+
+        request.path = path
+        request.source = this.source
+        request.target = this.target
+        request.method = "fetch"
+
+        Object.assign(request, options)
+
+        this.kite.notify(request)
+    }
+
+    /**
+     * 调用对端的 handler，内部自动拼接 handlers/handlerName
+     * @param handlerName 
+     * @param args 
+     * @returns 
+     */
+    async call(handlerName: string, ...args: any[]) {
+        const path = `handlers/${handlerName}`
+        const response = await this.fetch(path, { body: args })
         return response.body
     }
 
     /**
-     * 原生态调用信息，不做任何处理
-     * @param reqInfo 
+     * 调用对端的 handler，内部自动拼接 handlers/handlerName
+     * @param handlerName 
+     * @param args 
      * @returns 
      */
-    fetch(reqInfo: Partial<Request>) {
-        return this.kite.fetch(this.remote, reqInfo)
+    send(handlerName: string, ...args: any[]) {
+        const path = `handlers/${handlerName}`
+        return this.notify(path, { body: args })
     }
 }

@@ -5,7 +5,7 @@ import { Component } from "./Component";
 import { Router, TypeRouter } from "./Router";
 import { Target } from "./Target";
 import { toTypeRouter } from "../utils/toTypeRouter";
-import { useKite } from "../composables/useKite";
+import { Kite } from "./Kite";
 
 export type ServiceProps = Record<string, any>;
 
@@ -26,7 +26,7 @@ export class Service extends EventEmitter {
 
     [key: string]: any;
 
-    constructor() { super() }
+    constructor(private kite: Kite) { super() }
 
     /**
      * 获得组件
@@ -67,6 +67,7 @@ export class Service extends EventEmitter {
 
     /**
      * 包装远程目标
+     * 不传则表示广播
      * @param router 
      * @returns 
      */
@@ -74,11 +75,21 @@ export class Service extends EventEmitter {
 
         const target = new Target()
 
-        target.local = this.router
-        target.remote = toTypeRouter(router ?? this.router)
-        target.kite = useKite()
+        target.source = this.router
+        target.kite = this.kite
+        target.target = toTypeRouter(router ?? this.router)
 
         return target
+    }
+
+    /**
+     * 广播给 所有 serviceName 的服务
+     * @param serviceName 
+     * @param handlerName 
+     * @param args 
+     */
+    notifyAll(serviceName: string, handlerName: string, ...args: any[]) {
+        this.kite.notifyAll(this.source, serviceName, `handlers/${handlerName}`, ...args)
     }
 
 }

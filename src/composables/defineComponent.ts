@@ -25,7 +25,7 @@ export type ComponentDefine<P extends ComponentProps = any, M extends ComponentM
     /**
      * 各种钩子
      */
-    hooks: WithPropMethods<P, M, Context> & {
+    hooks?: WithPropMethods<P, M, Context> & {
         /**
         * 开始：安装后，会自动调用1次，如果设置了 keepAlive ，如果刚从alive列表出来，那么也会调用1次
         * 顺序：component.onStart ==> service.onStart
@@ -104,4 +104,12 @@ export function defineComponentTimers<T extends Record<string, TimerDefine>>(tim
 
 export function defineComponentTimer<T extends TimerDefine>(timer: T & ThisType<Context>) {
     return timer
+}
+
+export function defineComponentEvents<T extends Record<string, Function>>(events: T & ThisType<T & Context>) {
+    return events
+}
+
+export function defineComponentEvent(event: WithThis<Context, (...args: any[]) => any>) {
+    return event
 }

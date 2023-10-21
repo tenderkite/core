@@ -157,6 +157,14 @@ export function defineServiceTimer<T extends TimerDefine>(timer: T & ThisType<Co
     return timer
 }
 
+export function defineServiceEvents<T extends Record<string, Function>>(events: T & ThisType<T & Context>) {
+    return events
+}
+
+export function defineServiceEvent(event: WithThis<Context, (...args: any[]) => any>) {
+    return event
+}
+
 // export function defineService
 
 

@@ -2,11 +2,15 @@ import { Component } from "./Component";
 import { TypeRouter } from "./Router";
 import { Service } from "./Service";
 
-export type RequestMethod = "get" | "post" | "call" | "notify" | "setup"
+export type RequestMethod = "get" | "post" | "fetch" | "notify"
 
 export class Request {
+
+    source?: TypeRouter;
+    target!: TypeRouter;
+
+    path: string = "";
     method: RequestMethod = "get"
-    path: string = ""
     headers: Record<string, string> = {}
     body?: any
 
@@ -22,20 +26,27 @@ export class Response {
     statusMessage?: string
     body?: any
 
-    constructor() {
-
-    }
+    constructor() { }
 }
 
 export class KiteEvent {
-    target?: TypeRouter;
-    service?: Service;
+
+    service!: Service;
     component?: Component;
-    request: Request = new Request();
+
+    request!: Request;
     response: Response = new Response();
+
     [key: string]: any;
 
-    constructor() { }
+    constructor(request?: Request) {
+        if (request) {
+            this.request = request
+        }
+        else {
+            this.request = new Request()
+        }
+    }
 
     get headers() {
         return this.request.headers
