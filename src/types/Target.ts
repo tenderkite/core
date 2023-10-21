@@ -15,6 +15,10 @@ export class Target {
         return this.kite.createService(this.remote, { ...options, peer: this.local })
     }
 
+    stop(forceDestroy = false) {
+        return this.kite.stopService(this.remote, forceDestroy)
+    }
+
     /**
      * 调用 service 下的handlers函数
      * 传入 test，会自动转化成 handlers/test

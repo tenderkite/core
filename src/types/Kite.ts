@@ -30,6 +30,7 @@ export type BootCallback = () => BootDefine
 export class Kite extends EventEmitter {
 
     reses: Record<string, any> = {};
+    resesCreator: Array<{ name: string, creator: () => any }> = [];
 
     services: Record<string, Record<string | number, Service>> = {};
     keepAlives: Record<string, Record<string | number, Service>> = {};
@@ -58,7 +59,11 @@ export class Kite extends EventEmitter {
 
     constructor() { super() }
 
-    async regist(name: string) {
+    /**
+     * 
+     * @param name 
+     */
+    async register(name: string) {
 
         const module = new Module(this)
         await module.load(name)
@@ -76,12 +81,43 @@ export class Kite extends EventEmitter {
         this.middlewareDefines = { ...this.middlewareDefines, ...module.middlewares }
     }
 
-    resource(dir: string, callback: () => any) {
+    /**
+     * 添加资源生成器
+     * @param name 
+     * @param creator 
+     */
+    resource(name: string, creator: any | (() => any)) {
+        if (typeof creator == "function") {
+            this.resesCreator.push({
+                name,
+                creator
+            })
+        }
+        else {
+            this.resesCreator.push({
+                name,
+                creator: () => {
+                    return creator
+                }
+            })
+        }
+    }
 
+    /**
+     * 获得资源
+     * @param name 
+     * @returns 
+     */
+    getRes<T = any>(name: string) {
+        const value = this.reses[name]
+        if (value == null) {
+            return
+        }
+
+        return value as T
     }
 
     async start(workerCount?: number) {
-
         for (const module of this.modules) {
             this.collect(module)
         }
@@ -105,6 +141,11 @@ export class Kite extends EventEmitter {
             this.sendWorker = send
             this.workerIndex = index
             this.workerCount = threads
+        }
+
+        // 创建资源
+        for (const { name, creator } of this.resesCreator) {
+            this.reses[name] = creator()
         }
 
         const listeners = this.listeners("boot") as Array<BootCallback>
@@ -142,7 +183,6 @@ export class Kite extends EventEmitter {
 
             //排序，为构建依赖做准备
             if (this.workerIndex == 0) {
-
                 for (const createInfo of boot.services) {
 
                     const { router, options } = splitServiceCreate(createInfo)
@@ -157,9 +197,10 @@ export class Kite extends EventEmitter {
             }
         }
 
-        //合并成一个
+        // 添加 service 的中间件处理函数
         this.middlewares.push(this.serviceMiddlewares.bind(this))
 
+        // 合并中间件
         this.composedMiddleware = composeMiddlewares(this.middlewares)
 
         const dependenciesConfig: Record<string, string[]> = {}
@@ -182,8 +223,10 @@ export class Kite extends EventEmitter {
 
         const promises = []
 
-        //[ [ 'b', 'd', 'a', 'e' ], [ 'f', 'c' ] ]
-        for (const one of dependencies) {   //不同位置元素之间没有关系
+        // 例子：[ [ 'b', 'd', 'a', 'e' ], [ 'f', 'c' ] ]
+        // 不同位置元素之间没有关系，
+        // [ 'b', 'd', 'a', 'e' ] 中 后面的对前面的有依赖
+        for (const one of dependencies) {
             promises.push(new Promise<void>(async (resolve) => {
                 // 元素数组中，后面的依赖前面的
                 for (const name of one) {
@@ -223,9 +266,8 @@ export class Kite extends EventEmitter {
 
         const dependenciesConfig: Record<string, string[]> = {}
 
-        // 建立索引
+        // 建立依赖
         for (const name of names) {
-
             const define = this.getServiceDefine(name)
             if (define.depends == null) {
                 dependenciesConfig[name] = []
@@ -241,25 +283,19 @@ export class Kite extends EventEmitter {
         const dependencies = buildDependency(dependenciesConfig)
 
         for (const one of dependencies) {
-            for (let index = 0; index < this.workerCount; ++index) {
-                await this.callWorker(index, "realStopManyServices", one, true)
-            }
+            await this.broadWorkers("realStopManyServices", one, true)
         }
 
         //查漏补缺
-        for (let index = 0; index < this.workerCount; ++index) {
-            await this.callWorker(index, "realStop")
-        }
-
-        await this.realStop()
+        await this.broadWorkers("realStopAll")
 
         setTimeout(process.exit, 1000, 0)
     }
 
-    private async realStop() {
+    private async realStopAll() {
 
         if (this.debug) {
-            console.log(this.workerIndex, "realStop")
+            console.log(this.workerIndex, "realStopAll")
         }
 
         for (const name in this.keepAlives) {
@@ -279,8 +315,14 @@ export class Kite extends EventEmitter {
                 await this.realStopService(service!.router, true)
             }
         }
+
+        this.services = {}
     }
 
+    /**
+     * 收集当前种类的 service
+     * @returns 
+     */
     private async collectNames() {
         const result = []
         for (const name in this.services) {
@@ -289,6 +331,12 @@ export class Kite extends EventEmitter {
         return result
     }
 
+    /**
+     * 创建 service
+     * @param router 
+     * @param options 
+     * @returns 
+     */
     async createService(router: Router, options: any) {
 
         const tpRouter = toTypeRouter(router)
@@ -304,7 +352,14 @@ export class Kite extends EventEmitter {
         return await this.callWorker(index, "realCreateService", tpRouter, options)
     }
 
-    async stopService(router: Router) {
+    /**
+     * 停止 service
+     * @param router 
+     * @param forceDestroy 无视 keepalive，强制销毁
+     * @returns 
+     */
+    async stopService(router: Router, forceDestroy = false) {
+
         const tpRouter = toTypeRouter(router)
 
         let serviceDefine = this.serviceDefines[tpRouter.type]
@@ -315,9 +370,14 @@ export class Kite extends EventEmitter {
         const hash = hashRouter(tpRouter)
         const index = hash % this.workerCount
 
-        return await this.callWorker(index, "realStopService", tpRouter)
+        return await this.callWorker(index, "realStopService", tpRouter, forceDestroy)
     }
 
+    /**
+     * 
+     * @param router 
+     * @param options 
+     */
     private async realCreateService(router: TypeRouter, options: any) {
 
         let serviceDefine = this.serviceDefines[router.type]
@@ -410,7 +470,12 @@ export class Kite extends EventEmitter {
         }
     }
 
-    async destroyService(service: Service) {
+    /**
+     * 销毁 service
+     * 业务层不提供这个接口
+     * @param service 
+     */
+    private async destroyService(service: Service) {
 
         if (this.debug) {
             console.log(this.workerIndex, "start destroy service", service.router.type, service.router.id)
@@ -986,6 +1051,14 @@ export class Kite extends EventEmitter {
             this.sendWorker(index, { session, name, args })
             this.sessions[session] = { resolve, reject }
         })
+    }
+
+    private async broadWorkers(name: string, ...args: any[]) {
+        const promises = []
+        for (let i = 0; i < this.workerCount; ++i) {
+            promises.push(this.callWorker(i, name, ...args))
+        }
+        await Promise.all(promises)
     }
 
     private async onWorkerMessage(index: number, message: { name: string, args: any[], session?: number }) {

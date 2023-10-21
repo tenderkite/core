@@ -28,7 +28,12 @@ export class Service extends EventEmitter {
 
     constructor() { super() }
 
-    comp<T>(name: string) {
+    /**
+     * 获得组件
+     * @param name 
+     * @returns 
+     */
+    getComp<T = any>(name: string) {
         const comp = this.components[name]
         if (comp == null) {
             return
@@ -37,7 +42,12 @@ export class Service extends EventEmitter {
         return comp as T
     }
 
-    get<T>(name: string) {
+    /**
+     * 获得资源
+     * @param name 
+     * @returns 
+     */
+    getRes<T = any>(name: string) {
         const value = this.reses[name]
         if (value == null) {
             return
@@ -46,10 +56,20 @@ export class Service extends EventEmitter {
         return value as T
     }
 
-    set(name: string, val: any) {
+    /**
+     * 设置资源
+     * @param name 
+     * @param val 
+     */
+    setRes(name: string, val: any) {
         this.reses[name] = val
     }
 
+    /**
+     * 包装远程目标
+     * @param router 
+     * @returns 
+     */
     target(router?: Router) {
 
         const target = new Target()
