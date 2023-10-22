@@ -29,6 +29,9 @@ export type BootCallback = () => BootDefine
 
 export class Kite extends EventEmitter {
 
+    workerIndex: number = 0;
+    workerCount: number = 0;
+
     reses: Record<string, any> = {};
     resesCreator: Array<{ name: string, creator: () => any }> = [];
 
@@ -46,9 +49,6 @@ export class Kite extends EventEmitter {
     middlewareDefines: Record<string, MiddlewareDefine> = {};
 
     globalEvents: Record<string, Set<Service>> = {};
-
-    workerIndex: number = 0;
-    workerCount: number = 0;
 
     session = 0;
     sessions: Record<number, { resolve: Function, reject: Function }> = {}
@@ -70,7 +70,7 @@ export class Kite extends EventEmitter {
         this.modules.push(module)
     }
 
-    collect(module: Module) {
+    private collect(module: Module) {
 
         for (const child of module.modules) {
             this.collect(child)
@@ -117,6 +117,11 @@ export class Kite extends EventEmitter {
         return value as T
     }
 
+    /**
+     * 启动
+     * 
+     * @param workerCount worker的数量
+     */
     async start(workerCount?: number) {
         for (const module of this.modules) {
             this.collect(module)
@@ -198,7 +203,7 @@ export class Kite extends EventEmitter {
         }
 
         // 添加 service 的中间件处理函数
-        this.middlewares.push(this.serviceMiddlewares.bind(this))
+        this.middlewares.push(this.routeToService.bind(this))
 
         // 合并中间件
         this.composedMiddleware = composeMiddlewares(this.middlewares)
@@ -245,6 +250,10 @@ export class Kite extends EventEmitter {
         await Promise.all(promises)
     }
 
+    /**
+     * 退出
+     * @returns 
+     */
     async stop() {
 
         if (this.workerIndex != 0) {
@@ -370,7 +379,7 @@ export class Kite extends EventEmitter {
     }
 
     /**
-     * 
+     * 创建 service 
      * @param router 
      * @param options 
      */
@@ -510,7 +519,12 @@ export class Kite extends EventEmitter {
         }
     }
 
-    async setupService(service: Service, req: Request) {
+    /**
+     * 安装 service
+     * @param service 
+     * @param req 
+     */
+    private async setupService(service: Service, req: Request) {
 
         let serviceDefine = service.define
 
@@ -593,6 +607,10 @@ export class Kite extends EventEmitter {
         service.composedMiddleware = composeMiddlewares(service.middlewares)
     }
 
+    /**
+     * 将 service 放入 keepalive 列表中
+     * @param service 
+     */
     private keepAliveService(service: Service) {
         let tpService = this.keepAlives[service.router.type];
         if (tpService == null) {
@@ -610,7 +628,7 @@ export class Kite extends EventEmitter {
         }, service.define.keepAlive! * 1000);
     }
 
-    async onStartService(service: Service) {
+    private async onStartService(service: Service) {
 
         for (const name in service.components) {
             const component = service.components[name]
@@ -639,7 +657,7 @@ export class Kite extends EventEmitter {
         this.attachTimers(service)
     }
 
-    async onStopService(service: Service) {
+    private async onStopService(service: Service) {
 
         for (const name in service.components) {
             const component = service.components[name]
@@ -667,7 +685,8 @@ export class Kite extends EventEmitter {
         this.unattachTimers(service)
         this.unattachEvents(service)
     }
-    attachTimers(service: Service) {
+
+    private attachTimers(service: Service) {
 
         for (let name in service.components) {
             const componentDefine = this.getComponentDefine(service.define, name)!
@@ -762,7 +781,7 @@ export class Kite extends EventEmitter {
         }
     }
 
-    unattachTimers(service: Service) {
+    private unattachTimers(service: Service) {
         for (let name in service.components) {
             const component = service.components[name]!
             const componentDefine = component.define
@@ -810,7 +829,7 @@ export class Kite extends EventEmitter {
         }
     }
 
-    attachEvents(service: Service) {
+    private attachEvents(service: Service) {
         //regist timers
         const globalEvents = []
 
@@ -876,7 +895,7 @@ export class Kite extends EventEmitter {
         }
     }
 
-    unattachEvents(service: Service) {
+    private unattachEvents(service: Service) {
         let globalEvents = []
         for (let name in service.components) {
             const component = service.components[name]!
@@ -924,6 +943,11 @@ export class Kite extends EventEmitter {
         }
     }
 
+    /**
+     * 获取 service 实例
+     * @param router 
+     * @returns 
+     */
     getService(router: Router) {
         //@ts-ignore
         const type = router.type || router
@@ -937,6 +961,11 @@ export class Kite extends EventEmitter {
         return tpService[id]
     }
 
+    /**
+     * 获取 service 定义
+     * @param name 
+     * @returns 
+     */
     getServiceDefine(name: string) {
         let serviceDefine = this.serviceDefines[name]
         if (serviceDefine == null) {
@@ -946,6 +975,12 @@ export class Kite extends EventEmitter {
         return serviceDefine
     }
 
+    /**
+     * 获取 组件 定义
+     * @param serviceDefine 
+     * @param name 
+     * @returns 
+     */
     getComponentDefine(serviceDefine: ServiceDefine, name: string) {
         let exists = serviceDefine.components?.[name]
         if (exists) {
@@ -954,12 +989,33 @@ export class Kite extends EventEmitter {
         return this.componentDefines[name]
     }
 
+    /**
+     * 获取 中间件 定义
+     * @param serviceDefine 
+     * @param name 
+     * @returns 
+     */
     getMiddlewareDefine(serviceDefine: ServiceDefine, name: string) {
         let exists = serviceDefine.middlewares?.[name]
         if (exists) {
             return exists
         }
         return this.middlewareDefines[name]
+    }
+
+    /**
+     * 获取所有的 remotes 
+     */
+    getServiceRemotes() {
+        const results = {} as Record<string, Array<string>>
+        for (const name in this.serviceDefines) {
+            const define = this.serviceDefines[name]
+            const remotes = results[name] = [] as Array<string>
+            for (const path in define?.remotes ?? {}) {
+                remotes.push(path)
+            }
+        }
+        return results
     }
 
     /**
@@ -1090,7 +1146,7 @@ export class Kite extends EventEmitter {
      * @param next 
      * @returns 
      */
-    private async serviceMiddlewares(event: KiteEvent, next: () => Promise<void>) {
+    private async routeToService(event: KiteEvent, next: () => Promise<void>) {
 
         const { service } = event
         const { path } = event.request

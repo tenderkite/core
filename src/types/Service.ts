@@ -11,6 +11,8 @@ export type ServiceProps = Record<string, any>;
 
 export class Service extends EventEmitter {
 
+    kite!: Kite;
+
     router!: TypeRouter;
     define!: ServiceDefine
 
@@ -26,7 +28,10 @@ export class Service extends EventEmitter {
 
     [key: string]: any;
 
-    constructor(private kite: Kite) { super() }
+    constructor(kite: Kite) {
+        super()
+        this.kite = kite
+    }
 
     /**
      * 获得组件

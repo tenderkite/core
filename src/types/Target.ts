@@ -54,7 +54,7 @@ export class Target {
     }
 
     /**
-     * 请求远端对象
+     * 请求远端对象，不等待返回值
      * @param path 路径，例子： handlers/test;remotes/test
      * @returns 
      */
@@ -74,6 +74,7 @@ export class Target {
 
     /**
      * 调用对端的 handler，内部自动拼接 handlers/handlerName
+     * 等待返回值
      * @param handlerName 
      * @param args 
      * @returns 
@@ -86,12 +87,13 @@ export class Target {
 
     /**
      * 调用对端的 handler，内部自动拼接 handlers/handlerName
+     * 不等待返回值
      * @param handlerName 
      * @param args 
      * @returns 
      */
     send(handlerName: string, ...args: any[]) {
         const path = `handlers/${handlerName}`
-        return this.notify(path, { body: args })
+        this.notify(path, { body: args })
     }
 }
