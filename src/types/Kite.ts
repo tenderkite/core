@@ -211,7 +211,6 @@ export class Kite extends EventEmitter {
         const dependenciesConfig: Record<string, string[]> = {}
 
         for (const name in serviceCreates) {
-
             const define = this.getServiceDefine(name)
             if (define.depends == null) {
                 dependenciesConfig[name] = []
@@ -689,12 +688,10 @@ export class Kite extends EventEmitter {
     private attachTimers(service: Service) {
 
         for (let name in service.components) {
-            const componentDefine = this.getComponentDefine(service.define, name)!
             const component = service.components[name]!
+            for (const name in component.define.timers) {
 
-            for (const name in componentDefine.timers) {
-
-                const timer = componentDefine.timers[name]!
+                const timer = component.define.timers[name]!
                 const exists = component.timers[name]
 
                 if (exists || exists === false) {       //已经存在或者已经执行完了
@@ -712,7 +709,7 @@ export class Kite extends EventEmitter {
 
                 if (delay) {
                     component.timers[name] = setTimeout(async () => {
-                        const handler = componentDefine.timers?.[name]
+                        const handler = component.define.timers?.[name]
                         component.timers[name] = false
 
                         try {
@@ -726,7 +723,7 @@ export class Kite extends EventEmitter {
                 }
                 else if (interval) {
                     component.timers[name] = setInterval(async () => {
-                        const handler = componentDefine.timers?.[name]
+                        const handler = component.define.timers?.[name]
 
                         try {
                             await handler?.setup.call(component, timerEvent)
@@ -834,13 +831,11 @@ export class Kite extends EventEmitter {
         const globalEvents = []
 
         for (let name in service.components) {
-            const componentDefine = this.getComponentDefine(service.define, name)!
             const component = service.components[name]!
-
-            for (const name in componentDefine.events) {
+            for (const name in component.define.events) {
 
                 let eventName = name
-                const handler = componentDefine.events[name]!
+                const handler = component.define.events[name]!
 
                 let rootEvent = false
                 if (name.startsWith("~"))    //root event
