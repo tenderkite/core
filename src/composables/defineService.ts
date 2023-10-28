@@ -36,7 +36,11 @@ export type ServiceDefine<P extends ServiceProps = any, M extends ServiceMethods
      * 缓存超时时间：单位秒
      */
     keepAlive?: number;
-
+    /**
+     * 发送消息时，如果不存在，是否自动创建
+     * 默认值： false
+     */
+    autoCreate?: boolean;
     /**
      * 各种钩子
      */
@@ -89,6 +93,11 @@ export type ServiceDefine<P extends ServiceProps = any, M extends ServiceMethods
     timers?: WithPropMethods<P, M, Context> & Record<string, TimerDefine>;
 };
 
+/**
+ * 定义 服务
+ * @param options 
+ * @returns 
+ */
 export function defineService<P extends ServiceProps, M extends ServiceMethods, H extends ServiceHandlers, R extends ServiceHandlers>(options: ServiceDefine<P, M, H, R> | ServiceSetupHandler<P>): ServiceDefine<P, M, H, R> {
 
     const normal = {
@@ -125,10 +134,20 @@ export function defineServiceSetup<P extends ServiceProps>(handler: WithThis<Con
     return handler
 }
 
+/**
+ * 定义服务的 methods
+ * @param methods 
+ * @returns 
+ */
 export function defineServiceMethods<T extends Record<string, Function>>(methods: T & ThisType<T & Context>) {
     return methods
 }
 
+/**
+ * 定义服务的 单个method
+ * @param method 
+ * @returns 
+ */
 export function defineServiceMethod(method: WithThis<Context, (...args: any[]) => any>) {
     return method
 }

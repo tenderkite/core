@@ -19,6 +19,7 @@ import { getNestedValue } from "../utils/getNestedValue"
 import { toTypeRouter } from "../utils/toTypeRouter";
 import { hashRouter } from "../utils/hashRouter";
 import { buildDependency } from "../utils/buildDependency";
+import { PassThrough, Readable, Stream } from "node:stream";
 
 export type BootDefine = {
     services: Array<Router | [Router, any]>;
@@ -31,11 +32,18 @@ export class Kite extends EventEmitter {
 
     workerIndex: number = 0;
     workerCount: number = 0;
+    sendWorker!: (index: number, message: any) => void;     //用于发送 worker的函数
+
+    session = 0;
+    sessions: Record<number, { resolve: Function, reject: Function, stream?: Readable }> = {}
 
     reses: Record<string, any> = {};
     resesCreator: Array<{ name: string, creator: () => any }> = [];
 
     // virtuals: Record<string, (router: TypeRouter) => TypeRouter> = {};
+
+    //创建service是一个耗时长的过程，用这个方式避免竞争
+    createQueue: Record<string, Record<string | number, any>> = {};
 
     services: Record<string, Record<string | number, Service>> = {};
     keepAlives: Record<string, Record<string | number, Service>> = {};
@@ -51,11 +59,6 @@ export class Kite extends EventEmitter {
     middlewareDefines: Record<string, MiddlewareDefine> = {};
 
     globalEvents: Record<string, Set<Service>> = {};
-
-    session = 0;
-    sessions: Record<number, { resolve: Function, reject: Function }> = {}
-
-    sendWorker!: (index: number, message: any) => void;
 
     [key: string]: any;
 
@@ -356,12 +359,35 @@ export class Kite extends EventEmitter {
      */
     async createService(req: Request) {
         // const target = this.virtuals[req.target.type]?.(req.target) || req.target
-
         const target = req.target
         const hash = hashRouter(target)
         const index = hash % this.workerCount
 
         return await this.callWorker(index, "realCreateService", req, target)
+    }
+
+    /**
+     * 根据 autoCreate 标志来决定是否创建 service
+     * 检查是否自动创建service
+     */
+    private async autoCreateService(target: TypeRouter) {
+
+        const define = this.getServiceDefine(target.type)
+        if (define == null) {
+            return
+        }
+
+        if (!define.autoCreate) {
+            return
+        }
+
+        const req = new Request()
+
+        req.target = target
+
+        await this.realCreateService(req, target)
+
+        return this.getService(target)
     }
 
     /**
@@ -392,7 +418,14 @@ export class Kite extends EventEmitter {
             throw new Error("now such service:" + req.target.type)
         }
 
+        const result = await this.waitInQueue(target)
+
+        if (result) {
+            return result as Service
+        }
+
         let service
+        let fromKeepAlive = false
 
         if (serviceDefine.keepAlive) {
             const tpService = this.keepAlives[target.type]
@@ -402,7 +435,9 @@ export class Kite extends EventEmitter {
             }
 
             if (service?.keepAlive) {
-                clearTimeout(service?.keepAlive)
+                fromKeepAlive = true
+                clearTimeout(service.keepAlive)
+                delete service.keepAlive
             }
         }
 
@@ -415,7 +450,7 @@ export class Kite extends EventEmitter {
             await this.setupService(service, req)
         }
 
-        await this.onStartService(service)
+        await this.onStartService(service, fromKeepAlive)
 
         let tpService = this.services[service.router.type]
         if (tpService == null) {
@@ -426,6 +461,43 @@ export class Kite extends EventEmitter {
 
         if (this.debug) {
             console.log(this.workerIndex, "create service done", service.router.type, service.router.id)
+        }
+
+        this.releaseQueue(target, service)
+    }
+
+    private async waitInQueue(target: TypeRouter) {
+        let tps = this.createQueue[target.type]
+        if (tps == null) {
+            this.createQueue[target.type] = tps = {}
+        }
+
+        let waiting = tps[target.id]
+        if (waiting == null) {
+            waiting = tps[target.id] = []       //留空，表明自己是第一个
+        }
+        else {
+            return new Promise((resolve, reject) => {
+                waiting.push({ resolve, reject })
+            })
+        }
+    }
+
+    private async releaseQueue(target: TypeRouter, result?: Service) {
+        let tps = this.createQueue[target.type]
+        if (tps == null) {
+            return
+        }
+
+        let waiting = tps[target.id]
+        if (waiting == null) {
+            return
+        }
+
+        delete tps[target.id]
+
+        for (const one of waiting) {
+            one.resolve(result)
         }
     }
 
@@ -478,7 +550,7 @@ export class Kite extends EventEmitter {
     }
 
     /**
-     * 销毁 service
+     * 销毁 service,调用这个接口之前，先将这个 service 从列表中摘掉
      * 业务层不提供这个接口
      * @param service 
      */
@@ -490,7 +562,7 @@ export class Kite extends EventEmitter {
 
         if (service.keepAlive) {
             clearTimeout(service.keepAlive)
-            service.keepAlive = null
+            delete service.keepAlive
         }
 
         for (const name in service.components) {
@@ -630,7 +702,7 @@ export class Kite extends EventEmitter {
         }, service.define.keepAlive! * 1000);
     }
 
-    private async onStartService(service: Service) {
+    private async onStartService(service: Service, fromKeepAlive: boolean) {
 
         for (const name in service.components) {
             const component = service.components[name]
@@ -638,7 +710,9 @@ export class Kite extends EventEmitter {
             const event = new KiteEvent()
 
             event.service = service
+            event.keepAlive = fromKeepAlive
             event.component = component!
+
             event.request.path = `hooks/onStart`
             event.request.method = "fetch"
 
@@ -649,6 +723,8 @@ export class Kite extends EventEmitter {
             const event = new KiteEvent()
 
             event.service = service
+            event.keepAlive = fromKeepAlive
+
             event.request.path = `hooks/onStart`
             event.request.method = "fetch"
 
@@ -840,12 +916,9 @@ export class Kite extends EventEmitter {
                 let eventName = name
                 const handler = component.define.events[name]!
 
-                let rootEvent = false
-                if (name.startsWith("~"))    //root event
+                if (name.startsWith("~"))    //global event
                 {
-                    rootEvent = true
                     eventName = name.substring(1)
-
                     globalEvents.push(eventName)
                 }
 
@@ -1058,9 +1131,13 @@ export class Kite extends EventEmitter {
 
         // const router = this.virtuals[request.target.type]?.(request.target) || request.target
         const target = request.target
-        const service = this.getService(target)
+        let service = this.getService(target)
 
         const event = new KiteEvent(request)
+
+        if (service == null) {
+            service = await this.autoCreateService(target)
+        }
 
         if (service == null) {
             event.response.status = 404
@@ -1094,6 +1171,12 @@ export class Kite extends EventEmitter {
         this.notifyWorkers("realBroadEvent", source, eventName, ...args)
     }
 
+    /**
+     * 全局广播，只有那些 用 ~前缀的事件才会受到调用
+     * @param _ 
+     * @param eventName 
+     * @param args 
+     */
     private realBroadEvent(_: TypeRouter, eventName: string, ...args: any[]) {
         for (const name in this.globalEvents) {
             const sets = this.globalEvents[name]
@@ -1104,7 +1187,7 @@ export class Kite extends EventEmitter {
     }
 
     /**
-     * 
+     * 所有具有相同名字的 service 都会收到调用
      * @param source 发送的来源
      * @param serviceName service 的名称
      * @param path 路径，例子： handlers/test;remotes/test
@@ -1205,14 +1288,34 @@ export class Kite extends EventEmitter {
 
         try {
             const result = await this[name](...args)
-            if (session) {
+            if (session == null) {
+                return
+            }
+            if (result instanceof Readable) {
+                this.notifyWorker(index, "onRespStreamCreate", session)
+                result.on("data", (data) => {
+                    this.notifyWorker(index, "onRespStreamData", session, data)
+                })
+                result.on("close", () => {
+                    this.notifyWorker(index, "onRespStreamClose", session)
+                })
+
+                result.on("error", (e) => {
+                    this.notifyWorker(index, "onRespStreamError", session, e)
+                })
+                result.on("end", () => {
+                    this.notifyWorker(index, "onRespStreamEnd", session)
+                })
+            }
+            else {
                 this.notifyWorker(index, "onResp", session, result)
             }
         }
         catch (e) {
-            if (session) {
-                this.notifyWorker(index, "onError", session, e)
+            if (session == null) {
+                return
             }
+            this.notifyWorker(index, "onError", session, e)
         }
     }
 
@@ -1240,5 +1343,51 @@ export class Kite extends EventEmitter {
 
         delete this.sessions[id]
         session.reject(error)
+    }
+
+    private async onRespStreamCreate(id: number) {
+        const session = this.sessions[id]
+        if (session == null) {
+            return
+        }
+
+        session.stream = new PassThrough()
+
+        session.resolve(session.stream)
+    }
+    private async onRespStreamClose(id: number) {
+        const session = this.sessions[id]
+        if (session == null) {
+            return
+        }
+        delete this.sessions[id]
+        const stream = session.stream
+        stream?.emit("close")
+    }
+    private async onRespStreamData(id: number, data: any) {
+        const session = this.sessions[id]
+        if (session == null) {
+            return
+        }
+        const stream = session.stream
+        stream?.push(data)
+    }
+    private async onRespStreamEnd(id: number) {
+        const session = this.sessions[id]
+        if (session == null) {
+            return
+        }
+        delete this.sessions[id]
+        const stream = session.stream
+        stream?.push(null)
+    }
+    private async onRespStreamError(id: number, e: any) {
+        const session = this.sessions[id]
+        if (session == null) {
+            return
+        }
+        delete this.sessions[id]
+        const stream = session.stream
+        stream?.emit("error", e)
     }
 }

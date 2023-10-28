@@ -12,6 +12,7 @@ export type ServiceProps = Record<string, any>;
 export class Service extends EventEmitter {
 
     kite!: Kite;
+    keepAlive?: NodeJS.Timeout;       //用于 keepAlive 的timer
 
     router!: TypeRouter;
     define!: ServiceDefine
