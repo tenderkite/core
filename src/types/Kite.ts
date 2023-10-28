@@ -35,7 +35,7 @@ export class Kite extends EventEmitter {
     reses: Record<string, any> = {};
     resesCreator: Array<{ name: string, creator: () => any }> = [];
 
-    virtuals: Record<string, (router: Router) => TypeRouter> = {};
+    // virtuals: Record<string, (router: TypeRouter) => TypeRouter> = {};
 
     services: Record<string, Record<string | number, Service>> = {};
     keepAlives: Record<string, Record<string | number, Service>> = {};
@@ -105,14 +105,14 @@ export class Kite extends EventEmitter {
         }
     }
 
-    /**
-     * 将一个 路由 改成另外一个路由
-     * @param name 
-     * @param transform 
-     */
-    virtual(name: string, transform: (router: Router) => TypeRouter) {
-        this.virtuals[name] = transform
-    }
+    // /**
+    //  * 将一个 路由 改成另外一个路由
+    //  * @param name 
+    //  * @param transform 
+    //  */
+    // virtual(name: string, transform: (router: Router) => TypeRouter) {
+    //     this.virtuals[name] = transform
+    // }
 
     /**
      * 获得资源
@@ -355,11 +355,13 @@ export class Kite extends EventEmitter {
      * @returns 
      */
     async createService(req: Request) {
+        // const target = this.virtuals[req.target.type]?.(req.target) || req.target
 
-        const hash = hashRouter(req.target)
+        const target = req.target
+        const hash = hashRouter(target)
         const index = hash % this.workerCount
 
-        return await this.callWorker(index, "realCreateService", req)
+        return await this.callWorker(index, "realCreateService", req, target)
     }
 
     /**
@@ -368,25 +370,24 @@ export class Kite extends EventEmitter {
      * @param forceDestroy 无视 keepalive，强制销毁
      * @returns 
      */
-    async stopService(router: Router, forceDestroy = false) {
+    async stopService(router: TypeRouter, forceDestroy = false) {
 
-        let tpRouter = toTypeRouter(router)
-        tpRouter = this.virtuals[tpRouter.type]?.(tpRouter) || tpRouter
-
-        const hash = hashRouter(tpRouter)
+        // const target = this.virtuals[router.type]?.(router) || router
+        const target = router
+        const hash = hashRouter(target)
         const index = hash % this.workerCount
 
-        return await this.callWorker(index, "realStopService", tpRouter, forceDestroy)
+        return await this.callWorker(index, "realStopService", target, forceDestroy)
     }
 
     /**
-     * 创建 service 
-     * @param router 
-     * @param options 
+     * 
+     * @param req 
+     * @param target 有可能是经过 virtual 之后的
      */
-    private async realCreateService(req: Request) {
+    private async realCreateService(req: Request, target: TypeRouter) {
 
-        let serviceDefine = this.serviceDefines[req.target.type]
+        let serviceDefine = this.serviceDefines[target.type]
         if (serviceDefine == null) {
             throw new Error("now such service:" + req.target.type)
         }
@@ -394,10 +395,10 @@ export class Kite extends EventEmitter {
         let service
 
         if (serviceDefine.keepAlive) {
-            const tpService = this.keepAlives[req.target.type]
+            const tpService = this.keepAlives[target.type]
             if (tpService) {
-                service = tpService[req.target.id]
-                delete tpService[req.target.id]
+                service = tpService[target.id]
+                delete tpService[target.id]
             }
 
             if (service?.keepAlive) {
@@ -408,7 +409,7 @@ export class Kite extends EventEmitter {
         if (service == null) {
             service = new Service(this)
 
-            service.router = req.target
+            service.router = target
             service.define = serviceDefine
 
             await this.setupService(service, req)
@@ -428,19 +429,19 @@ export class Kite extends EventEmitter {
         }
     }
 
-    private async realStopService(router: TypeRouter, forceDestroy = false) {
+    private async realStopService(target: TypeRouter, forceDestroy = false) {
 
-        let tpService = this.services[router.type]
+        let tpService = this.services[target.type]
         if (tpService == null) {
             return
         }
 
-        const service = tpService[router.id]
+        const service = tpService[target.id]
         if (service == null) {
             return
         }
 
-        delete tpService[router.id]
+        delete tpService[target.id]
 
         await this.onStopService(service)
 
@@ -942,20 +943,16 @@ export class Kite extends EventEmitter {
 
     /**
      * 获取 service 实例
-     * @param router 
+     * @param target 
      * @returns 
      */
-    getService(router: Router) {
-        //@ts-ignore
-        const type = router.type || router
-        //@ts-ignore
-        const id = router.id || ""
+    getService(target: TypeRouter) {
 
-        const tpService = this.services[type]
+        const tpService = this.services[target.type]
         if (tpService == null) {
             return
         }
-        return tpService[id]
+        return tpService[target.id]
     }
 
     /**
@@ -1012,16 +1009,16 @@ export class Kite extends EventEmitter {
     }
 
     /**
-     * 异步发送请求，等待返回
-     * @param router 
+     * 等待远端结果
      * @param request 
      * @returns 
      */
     async fetch(request: Request): Promise<Response> {
 
-        const router = this.virtuals[request.target.type]?.(request.target) || request.target
+        // const router = this.virtuals[request.target.type]?.(request.target) || request.target
 
-        const hash = hashRouter(router)
+        const target = request.target
+        const hash = hashRouter(target)
         const index = hash % this.workerCount
 
         try {
@@ -1031,24 +1028,25 @@ export class Kite extends EventEmitter {
 
             return response as Response
         }
-        catch (e) {
+        catch (e: any) {
             const response = new Response()
 
             response.status = 502
-            response.statusMessage = String(e)
+            response.statusMessage = e.stack ?? e.message ?? String(e)
 
             return response
         }
     }
 
     /**
-     * 通知请求
+     * 通知请求,不等待返回
      * @param request 
      */
     async notify(request: Request) {
 
-        const router = this.virtuals[request.target.type]?.(request.target) || request.target
-        const hash = hashRouter(router)
+        // const router = this.virtuals[request.target.type]?.(request.target) || request.target
+        const target = request.target
+        const hash = hashRouter(target)
         const index = hash % this.workerCount
 
         request.method = "notify"
@@ -1058,8 +1056,9 @@ export class Kite extends EventEmitter {
 
     private async realFetch(request: Request) {
 
-        const router = this.virtuals[request.target.type]?.(request.target) || request.target
-        const service = this.getService(router)
+        // const router = this.virtuals[request.target.type]?.(request.target) || request.target
+        const target = request.target
+        const service = this.getService(target)
 
         const event = new KiteEvent(request)
 
