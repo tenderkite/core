@@ -19,7 +19,7 @@ import { getNestedValue } from "../utils/getNestedValue"
 import { toTypeRouter } from "../utils/toTypeRouter";
 import { hashRouter } from "../utils/hashRouter";
 import { buildDependency } from "../utils/buildDependency";
-import { PassThrough, Readable, Stream } from "node:stream";
+import { PassThrough, Readable, Stream, finished } from "node:stream";
 
 export type BootDefine = {
     services: Array<Router | [Router, any]>;
@@ -1352,8 +1352,11 @@ export class Kite extends EventEmitter {
         }
 
         session.stream = new PassThrough()
-
         session.resolve(session.stream)
+
+        finished(session.stream, () => {
+            delete this.sessions[id]
+        })
     }
     private async onRespStreamClose(id: number) {
         const session = this.sessions[id]
