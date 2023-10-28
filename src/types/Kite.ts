@@ -35,6 +35,8 @@ export class Kite extends EventEmitter {
     reses: Record<string, any> = {};
     resesCreator: Array<{ name: string, creator: () => any }> = [];
 
+    virtuals: Record<string, (router: Router) => TypeRouter> = {};
+
     services: Record<string, Record<string | number, Service>> = {};
     keepAlives: Record<string, Record<string | number, Service>> = {};
 
@@ -104,6 +106,15 @@ export class Kite extends EventEmitter {
     }
 
     /**
+     * 将一个 路由 改成另外一个路由
+     * @param name 
+     * @param transform 
+     */
+    virtual(name: string, transform: (router: Router) => TypeRouter) {
+        this.virtuals[name] = transform
+    }
+
+    /**
      * 获得资源
      * @param name 
      * @returns 
@@ -116,7 +127,6 @@ export class Kite extends EventEmitter {
 
         return value as T
     }
-
     /**
      * 启动
      * 
@@ -335,11 +345,7 @@ export class Kite extends EventEmitter {
      * @returns 
      */
     private async collectNames() {
-        const result = []
-        for (const name in this.services) {
-            result.push(name)
-        }
-        return result
+        return Object.keys(this.services)
     }
 
     /**
@@ -364,12 +370,8 @@ export class Kite extends EventEmitter {
      */
     async stopService(router: Router, forceDestroy = false) {
 
-        const tpRouter = toTypeRouter(router)
-
-        let serviceDefine = this.serviceDefines[tpRouter.type]
-        if (serviceDefine == null) {
-            throw new Error("now such service:" + tpRouter.type)
-        }
+        let tpRouter = toTypeRouter(router)
+        tpRouter = this.virtuals[tpRouter.type]?.(tpRouter) || tpRouter
 
         const hash = hashRouter(tpRouter)
         const index = hash % this.workerCount
@@ -966,7 +968,6 @@ export class Kite extends EventEmitter {
         if (serviceDefine == null) {
             throw new Error("now such service:" + name)
         }
-
         return serviceDefine
     }
 
@@ -1005,10 +1006,7 @@ export class Kite extends EventEmitter {
         const results = {} as Record<string, Array<string>>
         for (const name in this.serviceDefines) {
             const define = this.serviceDefines[name]
-            const remotes = results[name] = [] as Array<string>
-            for (const path in define?.remotes ?? {}) {
-                remotes.push(path)
-            }
+            results[name] = Object.keys(define?.remotes)
         }
         return results
     }
@@ -1021,7 +1019,9 @@ export class Kite extends EventEmitter {
      */
     async fetch(request: Request): Promise<Response> {
 
-        const hash = hashRouter(request.target)
+        const router = this.virtuals[request.target.type]?.(request.target) || request.target
+
+        const hash = hashRouter(router)
         const index = hash % this.workerCount
 
         try {
@@ -1047,7 +1047,8 @@ export class Kite extends EventEmitter {
      */
     async notify(request: Request) {
 
-        const hash = hashRouter(request.target)
+        const router = this.virtuals[request.target.type]?.(request.target) || request.target
+        const hash = hashRouter(router)
         const index = hash % this.workerCount
 
         request.method = "notify"
@@ -1057,7 +1058,8 @@ export class Kite extends EventEmitter {
 
     private async realFetch(request: Request) {
 
-        const service = this.getService(request.target)
+        const router = this.virtuals[request.target.type]?.(request.target) || request.target
+        const service = this.getService(router)
 
         const event = new KiteEvent(request)
 

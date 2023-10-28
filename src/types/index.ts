@@ -1,6 +1,5 @@
 export * from "./Kite"
 export * from "./Event"
-export * from "./Meta"
 export * from "./Service"
 export * from "./Component"
 export * from "./Timer"
